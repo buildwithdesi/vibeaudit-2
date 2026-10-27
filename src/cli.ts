@@ -1,7 +1,12 @@
 #!/usr/bin/env node
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { engineVersion, listEngineRules } from './engine/v1.ts';
 import { runScan } from './pipeline/run.ts';
+import { clientFromEnv, type ReasoningEffort } from './reason/meta-client.ts';
+import { DEFAULT_EFFORT, runReasoning } from './reason/orchestrate.ts';
+import { renderProofOfRisk } from './report/proof-of-risk.ts';
 import { topClasses } from './report/summary.ts';
 import { info, setLogLevel } from './util/log.ts';
 
@@ -9,6 +14,9 @@ const USAGE = `vibeaudit2 <command> [options]
 
 Commands
   scan <github-url | owner/repo | folder>   Clone (or read) a repository, run the v1 engine, normalize findings
+  reason <run-dir>                           Triage with an open-weight model, judge exploitability with Muse Spark
+  report <run-dir>                           Write the plain-language proof-of-risk report
+  audit <target>                             scan, then reason, then report, in one go
   rules                                      List the engine's live rules (the count is never hardcoded)
   version                                    Print versions
 
@@ -17,13 +25,26 @@ Scan options
   --ref <branch|tag>     Branch or tag to clone
   --context <n>          Lines of code kept around each finding (default: 6)
   --sca                  Also run dependency scanning (needs network and a lockfile)
-  --trust-target-config  Apply the scanned repo's own .vibe-audit.json and inline suppressions
+  --trust-target-config  Apply the scanned repo's own .vibe-audit.json
   --json                 Print the normalized findings as JSON on stdout
+
+Reason options
+  --dry-run              Build and save every prompt, estimate the cost, make no API call
+  --classes <a,b,c>      Vulnerability classes to judge (default: the top five in the run)
+  --max-findings <n>     Cap on findings sent to the reasoning model (default: 40)
+  --effort <level>       Reasoning effort for exploitability: minimal, low, medium, high, xhigh, max (default: high)
+  --budget-usd <n>       Dollar cap per run (default: 5)
+  --no-triage            Skip the open-weight triage pass even when TRIAGE_* is configured
+
+General
   --quiet                Only print errors
   --verbose              Print stage timings
 `;
 
+const EFFORTS = new Set<ReasoningEffort>(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
+
 async function main(argv: string[]): Promise<number> {
+  loadDotEnv();
   const { values, positionals } = parseArgs({
     args: argv,
     allowPositionals: true,
@@ -34,6 +55,12 @@ async function main(argv: string[]): Promise<number> {
       sca: { type: 'boolean', default: false },
       'trust-target-config': { type: 'boolean', default: false },
       json: { type: 'boolean', default: false },
+      'dry-run': { type: 'boolean', default: false },
+      classes: { type: 'string' },
+      'max-findings': { type: 'string', default: '40' },
+      effort: { type: 'string', default: DEFAULT_EFFORT.exploit },
+      'budget-usd': { type: 'string', default: '5' },
+      'no-triage': { type: 'boolean', default: false },
       quiet: { type: 'boolean', default: false },
       verbose: { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
@@ -64,12 +91,9 @@ async function main(argv: string[]): Promise<number> {
       process.stdout.write(`${rules.length} rules (engine ${await engineVersion()})\n`);
       return 0;
     }
-    case 'scan': {
-      if (!target) {
-        process.stderr.write('scan needs a target.\n\n');
-        process.stdout.write(USAGE);
-        return 2;
-      }
+    case 'scan':
+    case 'audit': {
+      if (!target) return usageError(`${command} needs a target.`);
       const contextLines = Number.parseInt(values.context, 10);
       if (!Number.isFinite(contextLines) || contextLines < 0 || contextLines > 50) {
         process.stderr.write('--context must be a number between 0 and 50.\n');
@@ -90,13 +114,97 @@ async function main(argv: string[]): Promise<number> {
       info(`top classes: ${topClasses(result.findings).join(', ') || 'none'}`);
       info(`summary: ${result.runDir}/summary.md`);
       if (values.json) process.stdout.write(`${JSON.stringify(result.findings, null, 2)}\n`);
+      if (command === 'scan') return 0;
+      const code = await reason(result.runDir, values);
+      if (code !== 0) return code;
+      await renderProofOfRisk(result.runDir);
+      info(`report: ${result.runDir}/report.md`);
+      return 0;
+    }
+    case 'reason': {
+      if (!target) return usageError('reason needs a run folder.');
+      return reason(resolveRunDir(target), values);
+    }
+    case 'report': {
+      if (!target) return usageError('report needs a run folder.');
+      const runDir = resolveRunDir(target);
+      await renderProofOfRisk(runDir);
+      info(`report: ${runDir}/report.md`);
       return 0;
     }
     default: {
-      process.stderr.write(`Unknown command "${command}".\n\n`);
-      process.stdout.write(USAGE);
-      return 2;
+      return usageError(`Unknown command "${command}".`);
     }
+  }
+}
+
+async function reason(
+  runDir: string,
+  values: {
+    'dry-run': boolean;
+    classes?: string | undefined;
+    'max-findings': string;
+    effort: string;
+    'budget-usd': string;
+    'no-triage': boolean;
+  },
+): Promise<number> {
+  if (!EFFORTS.has(values.effort as ReasoningEffort)) {
+    process.stderr.write(`--effort must be one of ${[...EFFORTS].join(', ')}.\n`);
+    return 2;
+  }
+  const maxFindings = Number.parseInt(values['max-findings'], 10);
+  const budgetUsd = Number.parseFloat(values['budget-usd']);
+  if (
+    !Number.isFinite(maxFindings) ||
+    maxFindings < 1 ||
+    !Number.isFinite(budgetUsd) ||
+    budgetUsd <= 0
+  ) {
+    process.stderr.write(
+      '--max-findings must be a positive integer and --budget-usd a positive number.\n',
+    );
+    return 2;
+  }
+  await runReasoning(runDir, {
+    reason: clientFromEnv('META'),
+    triage: values['no-triage'] ? null : clientFromEnv('TRIAGE'),
+    dryRun: values['dry-run'],
+    classes: values.classes
+      ? values.classes
+          .split(',')
+          .map((c) => c.trim())
+          .filter(Boolean)
+      : null,
+    maxFindings,
+    effort: { ...DEFAULT_EFFORT, exploit: values.effort as ReasoningEffort },
+    budget: { perRunUsd: budgetUsd },
+  });
+  return 0;
+}
+
+function resolveRunDir(input: string): string {
+  const dir = resolve(input);
+  if (!existsSync(resolve(dir, 'manifest.json'))) {
+    throw new Error(`${dir} is not a run folder (no manifest.json). Run "scan" first.`);
+  }
+  return dir;
+}
+
+function usageError(message: string): number {
+  process.stderr.write(`${message}\n\n`);
+  process.stdout.write(USAGE);
+  return 2;
+}
+
+/** Read .env from the current folder when present. Never overrides variables already set. */
+function loadDotEnv(): void {
+  const path = resolve('.env');
+  if (!existsSync(path)) return;
+  try {
+    process.loadEnvFile(path);
+  } catch {
+    // A malformed .env should not stop a scan; the reasoning stage reports a missing key itself.
   }
 }
 

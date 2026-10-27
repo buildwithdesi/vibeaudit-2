@@ -22,8 +22,8 @@ GitHub URL or folder
 | Stage | Status |
 |---|---|
 | 1 to 3 | Built. Tested on the seeded app and on OWASP NodeGoat. |
-| 4 to 5 | Prompts, schemas, budget and client drafted. Live calls wait on API credits. |
-| 6 | Planned |
+| 4 to 5 | Built. `reason <run>` with a dry-run mode; tested against a fake endpoint. First live call waits on API credits. |
+| 6 | Built. `report <run>` writes `report.md`. |
 | 7 | Planned |
 
 ## Quick start
@@ -34,6 +34,10 @@ Needs Node 24 and git.
 npm ci --ignore-scripts
 npm run scan -- https://github.com/OWASP/NodeGoat
 npm run scan -- examples/seeded-app
+node src/cli.ts reason runs/<run id> --dry-run   # writes every prompt, no API call
+node src/cli.ts reason runs/<run id>             # needs META_API_KEY in .env
+node src/cli.ts report runs/<run id>
+node src/cli.ts audit https://github.com/OWASP/NodeGoat   # all stages in one go
 node src/cli.ts rules
 ```
 

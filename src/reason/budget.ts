@@ -114,6 +114,15 @@ export class ReasoningBudget {
     return { ok: true };
   }
 
+  /** Charge the caps with an estimate and no call, so a dry run hits the same limits a live run would. */
+  reserve(file: string, estimatedInputTokens: number, outputTokens: number, rate: Rate): number {
+    const cost = (estimatedInputTokens * rate.input + outputTokens * rate.output) / 1_000_000;
+    this.spent += cost;
+    this.fileInput.set(file, (this.fileInput.get(file) ?? 0) + estimatedInputTokens);
+    this.fileFindings.set(file, (this.fileFindings.get(file) ?? 0) + 1);
+    return cost;
+  }
+
   /** Record what the API actually billed. */
   record(file: string, usage: Usage, rate: Rate): number {
     const cost = costUsd(usage, rate);

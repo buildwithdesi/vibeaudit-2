@@ -16,3 +16,7 @@ One entry per working day inside the hackathon window. Times are Central.
 - Wrote the seeded example app with five planted classes and the test that proves the pipeline finds all of them and never writes the planted password into any artifact.
 - End-to-end on a real repository: `OWASP/NodeGoat`, 91 files, 895 findings, 104 of 104 rules, about 6 seconds including the clone.
 - Drafted the reasoning layer: repo map, triage and exploitability prompts, strict-subset structured output schemas, per-file budget, Meta client.
+- Wired the reasoning stage into a command: `reason <run>` builds the repo map once, triages each selected finding with the open-weight model, judges exploitability with Muse Spark inside the budget, and writes every decision and dollar to `reasoning.json`. `--dry-run` writes every prompt to disk and estimates the cost with no call.
+- Wrote the proof-of-risk report command. One section per class, founder language, verdict, who can do it, how it happens, the lines that prove it, the smallest fix.
+- `audit <target>` runs scan, reason and report in one go.
+- Dry run on the NodeGoat scan: prompts written for the top five classes, estimated under one dollar.
