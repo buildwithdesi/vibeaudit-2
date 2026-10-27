@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import { vulnClass } from '../model/classes.ts';
 import { Finding, type FindingT, RunManifest, type RunManifestT } from '../model/finding.ts';
+import { PatchRecord, type PatchRecordT } from '../patch/loop.ts';
 import { ReasoningRecord, type ReasoningRecordT } from '../reason/orchestrate.ts';
 import { writeJson, writeText } from '../util/fs.ts';
 import { topClasses } from './summary.ts';
@@ -45,7 +46,13 @@ export async function renderProofOfRisk(runDir: string): Promise<string> {
   } catch {
     reasoning = null;
   }
-  const text = render(manifest, findings, reasoning);
+  let patch: PatchRecordT | null = null;
+  try {
+    patch = PatchRecord.parse(JSON.parse(await readFile(join(runDir, 'patch.json'), 'utf8')));
+  } catch {
+    patch = null;
+  }
+  const text = render(manifest, findings, reasoning, patch);
   await writeText(join(runDir, 'report.md'), text);
   await writeJson(join(runDir, 'manifest.json'), {
     ...manifest,
@@ -58,6 +65,7 @@ export function render(
   manifest: RunManifestT,
   findings: readonly FindingT[],
   reasoning: ReasoningRecordT | null,
+  patch: PatchRecordT | null = null,
 ): string {
   const classes = reasoning?.classes ?? topClasses(findings);
   const reasoned = findings.filter((f) => f.reasoning);
@@ -175,6 +183,27 @@ export function render(
       );
       lines.push('');
     }
+  }
+
+  if (patch?.patchCommit) {
+    lines.push('## After the patch');
+    lines.push('');
+    const who = patch.backend === 'muse-code' ? 'Muse Code' : 'Muse Spark';
+    const testsWord = patch.tests.ran ? (patch.tests.passed ? 'passed' : 'failed') : 'not run';
+    lines.push(
+      `${who} patched ${patch.selected.length} findings on branch \`${patch.branch}\`. The scan ran again on the patched code: ${patch.rescan.resolved.length} resolved, ${patch.rescan.remaining.length} still reported, ${patch.rescan.introduced} new. Project tests: ${testsWord}${patch.tests.ran ? ` (${patch.tests.runner})` : ''}. Result: ${patch.green ? 'green' : 'not green'}.`,
+    );
+    lines.push('');
+    lines.push('| Class | Before | After |');
+    lines.push('|---|---|---|');
+    for (const [cls, before] of Object.entries(patch.rescan.before.byClass)) {
+      lines.push(
+        `| ${vulnClass(cls as never).name} | ${before} | ${patch.rescan.after.byClass[cls] ?? 0} |`,
+      );
+    }
+    lines.push('');
+    lines.push('The full diff is in `patch.diff` next to this report.');
+    lines.push('');
   }
 
   lines.push('## How this report was made');

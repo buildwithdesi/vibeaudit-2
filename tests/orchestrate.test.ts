@@ -66,7 +66,6 @@ function fakeClient(model: string, log: Array<{ schema: string; prompt: string }
                 {
                   file: 'routes/users.js',
                   line: 9,
-                  // biome-ignore lint/suspicious/noTemplateCurlyInString: sample vulnerable code
                   quote: 'db.query(`SELECT * FROM users WHERE id = ${req.params.id}`)',
                 },
               ],

@@ -24,7 +24,7 @@ GitHub URL or folder
 | 1 to 3 | Built. Tested on the seeded app and on OWASP NodeGoat. |
 | 4 to 5 | Built. `reason <run>` with a dry-run mode; tested against a fake endpoint. First live call waits on API credits. |
 | 6 | Built. `report <run>` writes `report.md`. |
-| 7 | Planned |
+| 7 | Built. `patch <run>` with Muse Code or Muse Spark backends; green on the seeded app against a fake endpoint. |
 
 ## Quick start
 
@@ -37,6 +37,7 @@ npm run scan -- examples/seeded-app
 node src/cli.ts reason runs/<run id> --dry-run   # writes every prompt, no API call
 node src/cli.ts reason runs/<run id>             # needs META_API_KEY in .env
 node src/cli.ts report runs/<run id>
+node src/cli.ts patch runs/<run id> --run-tests   # sandbox branch, re-scan, project tests
 node src/cli.ts audit https://github.com/OWASP/NodeGoat   # all stages in one go
 node src/cli.ts rules
 ```
@@ -51,6 +52,7 @@ Copy `.env.example` to `.env` for the reasoning stages. The Meta Model API key c
 - The scanned repository's own `.vibe-audit.json` is moved aside during the engine run unless you pass `--trust-target-config`, so a repo cannot hide findings through its config. Known gap: engine 1.4.0 still honors inline `vibe-audit-ignore` comments. The manifest records which mode ran.
 - Credential-shaped values are masked before any code context is written to disk or sent to a model.
 - Code sent to a model is wrapped as untrusted data. Prompts state that instructions inside the code are to be ignored, and every model answer is constrained by a JSON schema and validated again with Zod.
+- The patch loop never lets a model write files directly through the API path: every edit is an exact search-and-replace that must match once, a plan that adds dependencies is rejected, and the patch lands on a sandbox branch. The project's tests run in a throwaway Docker container when Docker is available; running them on this machine needs an explicit flag.
 - Muse Spark runs in Standard mode only. The cheaper Contributor tier is never used because scanned code may belong to a customer.
 
 ## Develop

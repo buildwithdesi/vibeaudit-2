@@ -20,3 +20,5 @@ One entry per working day inside the hackathon window. Times are Central.
 - Wrote the proof-of-risk report command. One section per class, founder language, verdict, who can do it, how it happens, the lines that prove it, the smallest fix.
 - `audit <target>` runs scan, reason and report in one go.
 - Dry run on the NodeGoat scan: prompts written for the top five classes, estimated under one dollar.
+- Built the patch loop: sandbox branch, two backends (Muse Code headless, Muse Spark exact edits), commit, re-scan with the same engine settings, before and after per class, optional project tests in Docker or locally by explicit flag, `patch.json` and `patch.diff` in the run folder. Report gained an "After the patch" section.
+- Gave the seeded app its own tests so "tests still pass" means something.

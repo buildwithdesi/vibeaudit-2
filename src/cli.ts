@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { engineVersion, listEngineRules } from './engine/v1.ts';
+import { runPatchLoop } from './patch/loop.ts';
 import { runScan } from './pipeline/run.ts';
 import { clientFromEnv, type ReasoningEffort } from './reason/meta-client.ts';
 import { DEFAULT_EFFORT, runReasoning } from './reason/orchestrate.ts';
@@ -16,6 +17,7 @@ Commands
   scan <github-url | owner/repo | folder>   Clone (or read) a repository, run the v1 engine, normalize findings
   reason <run-dir>                           Triage with an open-weight model, judge exploitability with Muse Spark
   report <run-dir>                           Write the plain-language proof-of-risk report
+  patch <run-dir>                            Patch confirmed findings on a sandbox branch, re-scan, run the project's tests
   audit <target>                             scan, then reason, then report, in one go
   rules                                      List the engine's live rules (the count is never hardcoded)
   version                                    Print versions
@@ -35,6 +37,13 @@ Reason options
   --effort <level>       Reasoning effort for exploitability: minimal, low, medium, high, xhigh, max (default: high)
   --budget-usd <n>       Dollar cap per run (default: 5)
   --no-triage            Skip the open-weight triage pass even when TRIAGE_* is configured
+
+Patch options
+  --backend <auto|api|muse-code>   auto picks Muse Code when the muse CLI is installed, else the Model API
+  --run-tests            Run the project's own test script after patching
+  --docker               Run those tests in a throwaway node:24 container (default when Docker is available)
+  --allow-local-tests    Allow the tests to run on this machine when Docker is not available
+  --muse-model <id>      Model for Muse Code (default: muse-spark-1.3)
 
 General
   --quiet                Only print errors
@@ -61,6 +70,11 @@ async function main(argv: string[]): Promise<number> {
       effort: { type: 'string', default: DEFAULT_EFFORT.exploit },
       'budget-usd': { type: 'string', default: '5' },
       'no-triage': { type: 'boolean', default: false },
+      backend: { type: 'string', default: 'auto' },
+      'run-tests': { type: 'boolean', default: false },
+      docker: { type: 'boolean', default: true },
+      'allow-local-tests': { type: 'boolean', default: false },
+      'muse-model': { type: 'string', default: 'muse-spark-1.3' },
       quiet: { type: 'boolean', default: false },
       verbose: { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
@@ -131,6 +145,35 @@ async function main(argv: string[]): Promise<number> {
       await renderProofOfRisk(runDir);
       info(`report: ${runDir}/report.md`);
       return 0;
+    }
+    case 'patch': {
+      if (!target) return usageError('patch needs a run folder.');
+      const runDir = resolveRunDir(target);
+      const backend = values.backend;
+      if (backend !== 'auto' && backend !== 'api' && backend !== 'muse-code') {
+        return usageError('--backend must be auto, api, or muse-code.');
+      }
+      const maxFindings = Number.parseInt(values['max-findings'], 10);
+      const record = await runPatchLoop(runDir, {
+        backend,
+        client: clientFromEnv('META'),
+        museModel: values['muse-model'],
+        classes: values.classes
+          ? values.classes
+              .split(',')
+              .map((c) => c.trim())
+              .filter(Boolean)
+          : null,
+        maxFindings: Number.isFinite(maxFindings) && maxFindings > 0 ? maxFindings : 10,
+        runTests: values['run-tests'],
+        useDocker: values.docker,
+        allowLocalTests: values['allow-local-tests'],
+        dryRun: values['dry-run'],
+      });
+      info(
+        `patch record: ${runDir}/patch.json${record.branch ? ` (branch ${record.branch})` : ''}`,
+      );
+      return record.green || values['dry-run'] ? 0 : 1;
     }
     default: {
       return usageError(`Unknown command "${command}".`);
