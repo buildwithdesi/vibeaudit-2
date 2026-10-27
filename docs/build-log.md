@@ -22,3 +22,5 @@ One entry per working day inside the hackathon window. Times are Central.
 - Dry run on the NodeGoat scan: prompts written for the top five classes, estimated under one dollar.
 - Built the patch loop: sandbox branch, two backends (Muse Code headless, Muse Spark exact edits), commit, re-scan with the same engine settings, before and after per class, optional project tests in Docker or locally by explicit flag, `patch.json` and `patch.diff` in the run folder. Report gained an "After the patch" section.
 - Gave the seeded app its own tests so "tests still pass" means something.
+- Published the demo app as its own public repo and scanned it from the GitHub URL. Before artifacts recorded in `demo/before`.
+- Wrote the demo video script with a recording plan (2:45 target, 3:00 cap) and the submission checklist.

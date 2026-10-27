@@ -42,6 +42,8 @@ node src/cli.ts audit https://github.com/OWASP/NodeGoat   # all stages in one go
 node src/cli.ts rules
 ```
 
+Demo target: https://github.com/buildwithdesi/vibeaudit-2-demo-app. Recorded before and after runs live in `demo/`.
+
 Each scan writes `runs/<run id>/` with the clone, `engine-output.json`, `findings.json`, `manifest.json` and `summary.md`. The `runs/` folder is never committed.
 
 Copy `.env.example` to `.env` for the reasoning stages. The Meta Model API key comes from https://dev.meta.ai.
