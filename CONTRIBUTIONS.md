@@ -39,7 +39,7 @@ Status lines are updated as work lands. The build log in `docs/build-log.md` rec
 
 ## How a judge can verify what is new
 
-- `git log --format='%ad  %s' --date=iso` shows every commit inside the window. The first commit is the scaffold on October 26, 2026.
+- `git log --format='%ad  %s' --date=iso` shows every commit inside the window. The first commit is the scaffold on October 27, 2026 (day one of building was spent on research and recon, logged in `docs/build-log.md`).
 - `npm ls @jackdog668/vibeaudit` shows the only prior-work code path. It is a pinned dependency, called as a child process from `src/engine/v1.ts`, never imported as source.
 - Every run writes `manifest.json` with the engine name, version and live rule count, so the boundary is visible in the output too.
 - `npx vibeaudit --list-rules` prints the engine's live rule list on your machine.
