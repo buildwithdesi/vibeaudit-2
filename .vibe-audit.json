@@ -1,0 +1,3 @@
+{
+  "ignore": ["fixtures", "runs", "dist", "node_modules"]
+}

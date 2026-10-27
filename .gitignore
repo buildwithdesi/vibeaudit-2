@@ -1,0 +1,19 @@
+# dependencies and build output
+node_modules/
+dist/
+
+# scan runs hold cloned third-party repos and raw findings; never commit them
+runs/
+
+# secrets, always
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# os and editor noise
+.DS_Store
+Thumbs.db
+*.log
+coverage/
