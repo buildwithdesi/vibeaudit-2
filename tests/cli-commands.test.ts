@@ -116,13 +116,33 @@ test('version prints the tool version and the engine version', async () => {
 });
 
 test('a URL outside github.com is refused as such, not as a missing folder', async () => {
-  for (const target of ['https://gitlab.com/a/b', 'ssh://git@github.example/a/b']) {
+  for (const target of [
+    'https://gitlab.com/a/b',
+    'ssh://git@github.example/a/b',
+    'https://github.com.evil.example/a/b',
+    'https://evil.example/github.com/a/b',
+  ]) {
     const out = join(work, 'not-github');
     const result = await cli(['audit', target, '--out', out]);
     assert.equal(result.code, 2, target);
     assert.match(result.stderr, /Only GitHub repositories can be cloned/);
     assert.doesNotMatch(result.stderr, /Folder not found/);
     assert.equal(existsSync(out), false, 'no run folder for a refused target');
+  }
+});
+
+test('a github.com URL in any scheme is left to the target parser', async () => {
+  // The owner "-x" is invalid, so no parser version can get as far as a clone.
+  for (const target of [
+    'ssh://git@github.com/-x/y',
+    'git://github.com/-x/y',
+    'HTTPS://GitHub.com/-x/y',
+    'https://github.com',
+  ]) {
+    const result = await cli(['scan', target, '--out', join(work, 'github-forms'), '--quiet']);
+    assert.equal(result.code, 1, `${target}: ${result.stderr}`);
+    assert.doesNotMatch(result.stderr, /not a github\.com URL/, target);
+    assert.doesNotMatch(result.stderr, /cloning/, target);
   }
 });
 

@@ -320,12 +320,16 @@ function toolVersion(): string {
 }
 
 /**
- * A URL with a scheme that is not github.com. Without this, the target
- * parser reads it as a relative path and reports "Folder not found".
+ * A URL with a scheme whose host is not github.com. Without this, the target
+ * parser reads it as a relative path and reports "Folder not found". Every
+ * github.com form (https, ssh://git@, git://) is left to the parser, which
+ * decides which of them it can clone.
  */
 function isNonGitHubUrl(target: string): boolean {
   if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(target)) return false;
-  if (/^https?:\/\/(?:www\.)?github\.com\//i.test(target)) return false;
+  if (/^[a-z][a-z0-9+.-]*:\/\/(?:[^@/]*@)?(?:www\.)?github\.com(?:[/:]|$)/i.test(target)) {
+    return false;
+  }
   return !existsSync(resolve(target));
 }
 
