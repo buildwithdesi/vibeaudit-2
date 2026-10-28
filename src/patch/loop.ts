@@ -259,8 +259,9 @@ export async function runPatchLoop(runDir: string, options: PatchOptions): Promi
     error = (caught as Error).message.slice(0, 500);
     warn(`patch loop stopped: ${error}`);
   } finally {
-    if (workDir && baseCommit && manifest.target.kind === 'github') {
-      // Leave the clone on its original commit so a later stage sees the before state.
+    if (workDir && baseCommit) {
+      // Leave the copy on its original commit so a later stage, or a second
+      // patch run, sees the before state. The patch stays on its branch.
       await checkout(workDir, baseCommit).catch(() => undefined);
     }
   }

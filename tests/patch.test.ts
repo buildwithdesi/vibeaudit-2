@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { applyEdits } from '../src/patch/edits.ts';
-import { runPatchLoop } from '../src/patch/loop.ts';
+import { type PatchOptions, runPatchLoop } from '../src/patch/loop.ts';
 import { runScan } from '../src/pipeline/run.ts';
 import type { ClientConfig } from '../src/reason/meta-client.ts';
 import { setLogLevel } from '../src/util/log.ts';
@@ -278,4 +278,42 @@ test('dry run plans without touching the tree', async () => {
   assert.equal(record.patchCommit, null);
   assert.ok(record.selected.length > 0);
   assert.equal(readFileSync(join(app, 'routes/users.js'), 'utf8'), before);
+});
+
+/** Scan a fresh copy of the seeded app; returns the run folder. */
+async function scanFresh(prefix: string): Promise<string> {
+  const scan = await runScan(freshCopy(), {
+    outDir: mkdtempSync(join(tmpdir(), prefix)),
+    ref: null,
+    sca: false,
+    trustTargetConfig: false,
+    contextLines: 4,
+  });
+  return scan.runDir;
+}
+
+function loopOptions(client: ClientConfig, overrides: Partial<PatchOptions> = {}): PatchOptions {
+  return {
+    backend: 'api',
+    client,
+    museModel: 'muse-spark-1.3',
+    classes: ['sql-injection'],
+    maxFindings: 1,
+    runTests: false,
+    useDocker: false,
+    allowLocalTests: false,
+    budgetUsd: 5,
+    dryRun: false,
+    ...overrides,
+  };
+}
+
+test('a second patch run on a local target starts again from the snapshot', async () => {
+  const runDir = await scanFresh('va2-patch-rerun-');
+  const first = await runPatchLoop(runDir, loopOptions(fakePatcher([])));
+  assert.ok(first.patchCommit, 'first run commits a patch');
+  const second = await runPatchLoop(runDir, loopOptions(fakePatcher([])));
+  assert.equal(second.baseCommit, first.baseCommit, 'same base commit both times');
+  assert.ok(second.patchCommit, `second run commits a patch: ${JSON.stringify(second.outcomes)}`);
+  assert.ok(readFileSync(join(runDir, 'patch.diff'), 'utf8').includes('$1'), 'diff kept');
 });
