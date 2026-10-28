@@ -232,3 +232,31 @@ test('package.json values are masked by their key name too', async (t) => {
   assert.equal(parsed.scripts['test:auth'], pkg.scripts['test:auth']);
   assert.equal(parsed.dependencies.jsonwebtoken, '^9.0.2');
 });
+
+test('package.json dependency versions are masked on their own text, not by package name', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'va2-pkg-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const pkg = {
+    name: 'app',
+    dependencies: {
+      jsonwebtoken: '^8.5',
+      'next-auth': 'latest',
+      'private-lib': 'git+https://ci:Pw7vKq2mZx9t@git.example.dev/lib.git',
+    },
+    devDependencies: { 'js-tokens': '>=4.0' },
+  };
+  writeFileSync(join(dir, 'package.json'), JSON.stringify(pkg), 'utf8');
+  const text = await readPackageJson(dir);
+  assert.ok(text);
+  const parsed = JSON.parse(text) as typeof pkg;
+  // A package name such as jsonwebtoken is not a credential name, so its version stays readable.
+  assert.equal(parsed.dependencies.jsonwebtoken, '^8.5');
+  assert.equal(parsed.dependencies['next-auth'], 'latest');
+  assert.equal(parsed.devDependencies['js-tokens'], '>=4.0');
+  // A credential written into the version itself is still masked.
+  assert.ok(!text.includes('Pw7vKq2mZx9t'), text);
+  assert.equal(
+    parsed.dependencies['private-lib'],
+    'git+https://ci:[REDACTED]@git.example.dev/lib.git',
+  );
+});

@@ -86,9 +86,14 @@ export async function readPackageJson(repoDir: string): Promise<string | null> {
       if (pkg[key] !== undefined) keep[key] = pkg[key];
     }
     // Masked value by value so the JSON stays valid, and by key, which no value shows on its own.
+    // Dependency keys are package names (jsonwebtoken, next-auth), so a version is read alone.
+    const packages = [keep.dependencies, keep.devDependencies];
     return JSON.stringify(
       keep,
-      (key, value: unknown) => (typeof value === 'string' ? redactValue(key, value).text : value),
+      function (this: unknown, key: string, value: unknown) {
+        if (typeof value !== 'string') return value;
+        return (packages.includes(this) ? redactSecrets(value) : redactValue(key, value)).text;
+      },
       1,
     );
   } catch {
