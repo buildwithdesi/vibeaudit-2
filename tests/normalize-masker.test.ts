@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { redactSecrets } from '../src/normalize/context.ts';
+import { redactSecrets, redactValue } from '../src/normalize/context.ts';
 
 // Every fake secret below carries this marker, so a leak is a plain substring check.
 const M = 'FAKEZ9';
@@ -162,4 +162,39 @@ test('escaped text keeps its escapes, so masked JSON still parses', () => {
   const parsed = JSON.parse(text) as Record<string, string>;
   assert.equal(parsed.a, 'postgres://u:', 'a URL pattern never joins two strings');
   assert.equal(parsed.b, 'x@host');
+});
+
+test('a value masked apart from its JSON is masked by its key, as the pair is in a line', () => {
+  const value = `${M}abcdefgh`;
+  for (const key of ['api_key', 'DB_PASSWORD', 'clientSecret', 'basic_auth', 'my_token']) {
+    assert.deepEqual(redactValue(key, value), {
+      text: `[REDACTED:${value.length}]`,
+      redacted: true,
+    });
+  }
+  // Kept: keys that are not credential names, and references, versions and auth settings.
+  const kept: Array<[string, string]> = [
+    ['build', value],
+    ['primary_key', value],
+    ['authRoutes', value],
+    ['jsonwebtoken', '^9.0.2'],
+    ['API_KEY', '${API_KEY}'],
+    ['auth', 'session'],
+    ['test:auth', 'node --test tests/auth.test.ts'],
+    ['token', 'abc'],
+  ];
+  for (const [key, text] of kept) assert.equal(redactValue(key, text).text, text, key);
+  // Masked whole even when part of it has a shape of its own, so the rest cannot slip past.
+  for (const text of [
+    `Bearer ${M}abcdefghijklmnop`,
+    `API_KEY=abcd1234 node seed.js --token ${M}abcdefgh`,
+  ]) {
+    assert.equal(redactValue('authorization', text).text, `[REDACTED:${text.length}]`);
+  }
+  // Under any other key, and for an auth setting, the value's own shapes are still masked.
+  assert.equal(redactValue('seed', 'API_KEY=abcd1234 node x').text, 'API_KEY=[REDACTED:8] node x');
+  assert.equal(redactValue('auth', 'see API_KEY=abcd1234').text, 'see API_KEY=[REDACTED:8]');
+  // A line break is read as the file writes it, an escape, not the space of prose.
+  const lines = `${M}dXNl\ncjpwYXNz`;
+  assert.equal(redactValue('auth', lines).text, `[REDACTED:${lines.length}]`);
 });

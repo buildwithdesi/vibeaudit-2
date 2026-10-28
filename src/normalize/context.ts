@@ -217,6 +217,28 @@ export function redactSecrets(text: string): { text: string; redacted: boolean }
   return { text: out, redacted };
 }
 
+/** A key that names a credential, read as ASSIGNED_SECRET reads one: `api_key`, `DB_PASSWORD`. */
+const SECRET_KEY = new RegExp(String.raw`${SECRET_NAME}s?\w*$`, 'i');
+
+/**
+ * Mask one string value of parsed data, such as a JSON file read as an object.
+ * Masking each value alone keeps the serialized text valid, but the value no
+ * longer sits next to its key, so a value whose key names a credential
+ * (`"api_key": "x"`) is masked whole here, with the same exceptions a quoted
+ * value has in redactSecrets. It is masked whole even when part of it was
+ * masked on its own (`API_KEY=x node seed.js --token y`), so the rest cannot
+ * slip past.
+ */
+export function redactValue(key: string, value: string): { text: string; redacted: boolean } {
+  const own = redactSecrets(value);
+  const name = SECRET_KEY.exec(key);
+  if (!name || value.length < 4 || QUOTED_REFERENCE.test(value)) return own;
+  // Read as the file writes it, where a line break is an escape, not the space of prose.
+  const written = JSON.stringify(value).slice(1, -1);
+  if (AUTH_OPEN.test(`${name[0]}=`) && isAuthSetting(written, true)) return own;
+  return { text: `[REDACTED:${value.length}]`, redacted: true };
+}
+
 /**
  * Read the lines around a finding. Returns null when the file is missing,
  * oversized, a symlink, a secret-bearing file, or resolves outside the root.

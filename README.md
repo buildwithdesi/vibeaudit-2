@@ -25,7 +25,7 @@ GitHub URL or folder
 | 4 | Built, not run live. No recorded run had `TRIAGE_*` set: `demo/after/reasoning.json` has `triage: null`. Tested against a stub endpoint only. |
 | 5 | Built and run live. Muse Spark judged the demo app: 9 verdicts, 10 calls, $0.17. See `demo/after/report.md`. |
 | 6 | Built. `report <run>` writes `report.md`. |
-| 7 | Built and green live with the Muse Spark backend on the demo repo: 4 patched, tests passed (run locally), $0.07. Muse Code backend built, not run live. |
+| 7 | Built and green live with the Muse Spark backend on the demo repo: 4 places patched covering 6 findings (4 gone on the re-scan, 2 re-judged closed), tests passed (run locally), $0.07. Muse Code backend built, not run live. |
 
 ## Meta tooling in this repo
 
@@ -68,7 +68,7 @@ One live verdict from `demo/after/report.md`, unedited:
 > **Who can do this:** anyone on the internet, no account needed.
 > **What could happen:** Anyone on the internet can ask for one user account and trick the system into showing private details for many other accounts. Losing control of customer details like this can break trust and create legal and money problems for the business.
 
-And the patch loop on the same repo: 4 findings patched by Muse Spark, re-scan clean except 2 rule flags the model re-judged closed on the patched code, project tests passed (run locally with `--allow-local-tests`), green, 7 cents.
+And the patch loop on the same repo: Muse Spark patched 4 places covering 6 findings (each selected lead plus any finding on the same line): 4 gone on the re-scan, 2 still flagged by a rule and re-judged closed on the patched code. Project tests passed (run locally with `--allow-local-tests`), green, 7 cents.
 
 One caveat on that patch: the demo app has no login, so the patched user routes now answer 401 to every caller until one is added. The app's two tests do not touch the routes, so "tests passed" says nothing about them. The model raised this itself in its patch notes (`outcomes[].note` in `demo/after/patch.json`), but the report does not show those notes yet.
 
