@@ -163,7 +163,9 @@ test('a network failure is retried, and gives up with status 0 when retries run 
   assert.equal(down.calls(), 1);
 });
 
-test('a request that outlives timeoutMs is aborted', async () => {
+// A client that ignored timeoutMs would hang for its 180 s default, so the
+// test gets a short timeout of its own and fails instead of waiting.
+test('a request that outlives timeoutMs is aborted', { timeout: 2_000 }, async () => {
   let calls = 0;
   const fetchImpl = ((_url: string | URL | Request, init?: RequestInit) => {
     calls += 1;
