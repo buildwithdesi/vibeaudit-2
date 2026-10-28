@@ -1,9 +1,10 @@
+import { existsSync } from 'node:fs';
 import { lstat, readFile } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
 import { z } from 'zod';
 import { VULN_CLASS_IDS, vulnClass } from '../model/classes.ts';
 import { Finding, type FindingT, RunManifest, type RunManifestT } from '../model/finding.ts';
-import { isSecretFile, safeResolve } from '../normalize/context.ts';
+import { isSecretFile, redactSecrets, safeResolve } from '../normalize/context.ts';
 import { PatchRecord, type PatchRecordT } from '../patch/loop.ts';
 import { ReasoningRecord, type ReasoningRecordT } from '../reason/orchestrate.ts';
 import { writeJson, writeText } from '../util/fs.ts';
@@ -75,7 +76,12 @@ export async function renderProofOfRisk(runDir: string): Promise<string> {
     patch = null;
   }
   const quoted = findings.flatMap((f) => f.reasoning?.evidence.map((e) => e.file) ?? []);
-  const checker = await quoteChecker(manifest.target.path, quoted);
+  // A GitHub run keeps its clone in repo/. If the run folder moved since, look there.
+  const repoDir =
+    manifest.target.kind === 'github' && !existsSync(manifest.target.path)
+      ? join(runDir, 'repo')
+      : manifest.target.path;
+  const checker = await quoteChecker(repoDir, quoted);
   const text = render(manifest, findings, reasoning, patch, checker);
   await writeText(join(runDir, 'report.md'), text);
   await writeJson(join(runDir, 'manifest.json'), {
@@ -334,44 +340,56 @@ function dedupeLocations(findings: readonly FindingT[]): FindingT[] {
 
 /**
  * Checks a quoted line against the real file, whitespace-insensitive, so a
- * made-up quote is flagged. The paths come from the model, so files are read
- * through the same guard as the code context: a path outside the repo cannot
- * hold the quote, and a symlink, an oversized file or a secret-bearing file is
- * never read, so its quotes are not checked.
+ * made-up quote is flagged. The model only ever saw masked code, so a quote
+ * matches the file as written or as masked. The paths come from the model, so
+ * files are read through the same guard as the code context: a path outside
+ * the repo cannot hold the quote, and a symlink, an oversized file or a
+ * secret-bearing file is never read, so its quotes are not checked. Neither
+ * is anything when the repo is not on this machine.
  */
 export async function quoteChecker(
   repoDir: string,
   files: Iterable<string>,
 ): Promise<QuoteChecker> {
   const root = resolve(repoDir);
+  const present = await lstat(root).then(
+    (info) => info.isDirectory(),
+    () => false,
+  );
+  if (!present) return () => null;
   const keys = [...new Set([...files].map((f) => f.replace(/\\/g, '/')))];
   const texts = await Promise.all(keys.map((key) => readForQuotes(root, key)));
   const cache = new Map(keys.map((key, i) => [key, texts[i] ?? null]));
   return (file, quote) => {
-    const content = cache.get(file.replace(/\\/g, '/'));
-    if (content === null || content === undefined) return null;
-    const needle = quote.replace(/\s+/g, '');
-    return needle.length > 0 && content.includes(needle);
+    const versions = cache.get(file.replace(/\\/g, '/'));
+    if (!versions) return null;
+    const needle = squash(quote);
+    return needle.length > 0 && versions.some((v) => v.includes(needle));
   };
 }
 
-/** The file with whitespace removed; '' when it cannot hold the quote; null when it is not checked. */
-async function readForQuotes(root: string, key: string): Promise<string | null> {
+/** The file as written and as masked; [] when it cannot hold the quote; null when it is not checked. */
+async function readForQuotes(root: string, key: string): Promise<string[] | null> {
   const lexical = resolve(root, key);
-  if (lexical !== root && !lexical.startsWith(root + sep)) return '';
+  if (lexical !== root && !lexical.startsWith(root + sep)) return [];
   if (isSecretFile(key)) return null;
   const abs = await safeResolve(root, key);
   if (abs) {
     return readFile(abs, 'utf8').then(
-      (text) => text.replace(/\s+/g, ''),
+      (text) => [squash(text), squash(redactSecrets(text).text)],
       () => null,
     );
   }
   // Missing: the quote cannot be there. Present but refused: not checked.
   return lstat(lexical).then(
     () => null,
-    () => '',
+    () => [],
   );
+}
+
+/** Whitespace-free, with every mask alike: a mask that shows a length still matches one that does not. */
+function squash(text: string): string {
+  return text.replace(/\[REDACTED(?::\d+)?\]/g, '[REDACTED]').replace(/\s+/g, '');
 }
 
 function rank(f: FindingT): number {
