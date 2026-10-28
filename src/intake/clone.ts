@@ -30,12 +30,33 @@ export async function cloneGitHub(
   options: { timeoutMs?: number } = {},
 ): Promise<CloneResult> {
   const timeout = options.timeoutMs ?? 120_000;
-  const noHooks = join(dirname(dest), 'no-hooks');
-  await mkdir(noHooks, { recursive: true });
+  await mkdir(noHooksDir(dest), { recursive: true });
 
+  const env = cloneEnv();
+  try {
+    await run('git', cloneArgs(target, dest), {
+      timeout,
+      env,
+      windowsHide: true,
+      maxBuffer: 8 * 1024 * 1024,
+    });
+  } catch (error) {
+    throw new CloneError(`git clone of ${target.webUrl} failed: ${describe(error)}`);
+  }
+
+  const { stdout } = await run('git', ['-C', dest, 'rev-parse', 'HEAD'], {
+    timeout: 15_000,
+    env,
+    windowsHide: true,
+  });
+  return { dir: dest, commit: stdout.trim() };
+}
+
+/** The full `git` argument list for the clone, kept pure so the hardening can be checked offline. */
+export function cloneArgs(target: GitHubTarget, dest: string): string[] {
   const args = [
     '-c',
-    `core.hooksPath=${noHooks}`,
+    `core.hooksPath=${noHooksDir(dest)}`,
     '-c',
     'core.symlinks=false',
     '-c',
@@ -55,20 +76,17 @@ export async function cloneGitHub(
   ];
   if (target.ref) args.push('--branch', target.ref);
   args.push('--', target.cloneUrl, dest);
+  return args;
+}
 
-  const env = scrubbedEnv({ GIT_LFS_SKIP_SMUDGE: '1', GIT_CONFIG_NOSYSTEM: '1' });
-  try {
-    await run('git', args, { timeout, env, windowsHide: true, maxBuffer: 8 * 1024 * 1024 });
-  } catch (error) {
-    throw new CloneError(`git clone of ${target.webUrl} failed: ${describe(error)}`);
-  }
+/** Scrubbed of keys and tokens, no credential prompt, no system-wide git config, no LFS downloads. */
+export function cloneEnv(): NodeJS.ProcessEnv {
+  return scrubbedEnv({ GIT_LFS_SKIP_SMUDGE: '1', GIT_CONFIG_NOSYSTEM: '1' });
+}
 
-  const { stdout } = await run('git', ['-C', dest, 'rev-parse', 'HEAD'], {
-    timeout: 15_000,
-    env,
-    windowsHide: true,
-  });
-  return { dir: dest, commit: stdout.trim() };
+/** An empty hooks folder next to the clone. The patch stage points its own git calls at it too. */
+function noHooksDir(dest: string): string {
+  return join(dirname(dest), 'no-hooks');
 }
 
 function describe(error: unknown): string {
