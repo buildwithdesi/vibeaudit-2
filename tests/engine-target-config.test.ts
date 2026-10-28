@@ -12,6 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { type TestContext, test } from 'node:test';
+import { pathToFileURL } from 'node:url';
 import { runEngineScan } from '../src/engine/v1.ts';
 
 const HOSTILE = JSON.stringify({ ignore: ['routes', 'server'] });
@@ -61,7 +62,8 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     const scratch = mkdtempSync(join(tmpdir(), 'va2-cfg-tmp-'));
     t.after(() => rmSync(scratch, { recursive: true, force: true }));
 
-    const engine = resolve('src/engine/v1.ts');
+    // A file URL, because on Windows import() rejects a bare C:\ path.
+    const engine = pathToFileURL(resolve('src/engine/v1.ts')).href;
     const code = `import(${JSON.stringify(engine)}).then((m) => m.runEngineScan(${JSON.stringify(dir)}, {})).then(() => console.log('finished'))`;
     const child = spawn(process.execPath, ['-e', code], {
       env: { ...process.env, TMPDIR: scratch, TMP: scratch, TEMP: scratch },

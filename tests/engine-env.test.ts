@@ -4,6 +4,7 @@ import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { type TestContext, test } from 'node:test';
+import { pathToFileURL } from 'node:url';
 
 // The engine and every other child process get scrubbedEnv(), which points
 // npm at empty config files in a temp folder. That folder used to outlive
@@ -16,7 +17,8 @@ function scratchDir(t: TestContext): string {
 }
 
 function runChild(t: TestContext, scratch: string, body: string) {
-  const env = resolve('src/util/env.ts');
+  // A file URL, because on Windows import() rejects a bare C:\ path.
+  const env = pathToFileURL(resolve('src/util/env.ts')).href;
   const code = `import(${JSON.stringify(env)}).then((m) => { ${body} });`;
   const child = spawn(process.execPath, ['-e', code], {
     env: { ...process.env, TMPDIR: scratch, TMP: scratch, TEMP: scratch },
