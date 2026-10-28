@@ -202,7 +202,8 @@ async function main(argv: string[]): Promise<number> {
         `patch record: ${runDir}/patch.json${record.branch ? ` (branch ${record.branch})` : ''}`,
       );
       if (values['dry-run']) return 0;
-      if (values['run-tests'] && record.patchCommit && !record.tests.ran) {
+      // A loop that stopped with an error never reached the tests and has already said why.
+      if (values['run-tests'] && record.patchCommit && !record.tests.ran && !record.error) {
         warn(`project tests not run: ${record.tests.outputTail}`);
       }
       if (record.green) return 0;

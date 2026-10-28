@@ -333,10 +333,9 @@ test('patch prints why the project tests did not run', {
     '#!/bin/sh\necho "// reviewed" >> server/config.js\necho \'{"type":"done"}\'\n',
   );
   chmodSync(join(bin, 'muse'), 0o755);
-  const result = await cli(
-    ['patch', runDir, '--backend', 'muse-code', '--run-tests', '--no-docker'],
-    { PATH: `${bin}${delimiter}${process.env.PATH ?? ''}` },
-  );
+  const withMuse = { PATH: `${bin}${delimiter}${process.env.PATH ?? ''}` };
+  const args = ['--backend', 'muse-code', '--run-tests', '--no-docker'];
+  const result = await cli(['patch', runDir, ...args], withMuse);
   assert.equal(result.code, 1, 'tests that never ran can never be green');
   assert.match(
     result.stderr,
@@ -345,4 +344,15 @@ test('patch prints why the project tests did not run', {
   const record = readJson(join(runDir, 'patch.json'));
   assert.equal(record.backend, 'muse-code');
   assert.ok(record.patchCommit, 'the fake agent edit was committed');
+
+  // A loop that stops after the commit, before the tests, has already said why.
+  const stopped = freshRun('patch-stopped');
+  mkdirSync(join(stopped, 'patch.diff', 'blocker'), { recursive: true });
+  const early = await cli(['patch', stopped, ...args], withMuse);
+  assert.equal(early.code, 1);
+  assert.match(early.stderr, /patch loop stopped: EISDIR/);
+  assert.doesNotMatch(early.stderr, /project tests not run/);
+  const earlyRecord = readJson(join(stopped, 'patch.json'));
+  assert.ok(earlyRecord.patchCommit, 'the loop stopped after the commit');
+  assert.ok(earlyRecord.error);
 });
