@@ -94,9 +94,7 @@ export function render(
   const asked = (reasoning?.classes ?? []).filter((id) => known.includes(id));
   const classes = asked.length ? asked : topClasses(findings);
   const reasoned = findings.filter((f) => f.reasoning);
-  const confirmed = reasoned.filter(
-    (f) => f.reasoning?.exploitability === 'confirmed' || f.reasoning?.exploitability === 'likely',
-  );
+  const confirmed = reasoned.filter(isHot);
   const lines: string[] = [];
 
   lines.push(`# Proof of risk: ${manifest.target.label}`);
@@ -123,12 +121,9 @@ export function render(
   for (const id of classes) {
     const cls = vulnClass(id as never);
     const inClass = findings.filter((f) => f.vulnClass === id);
-    const hot = inClass.filter(
-      (f) =>
-        f.reasoning?.exploitability === 'confirmed' || f.reasoning?.exploitability === 'likely',
-    ).length;
-    const sure = reasoned.length ? `${hot} confirmed or likely` : 'not checked yet';
-    lines.push(`| ${PLAIN_LABELS[id] ?? cls.name} | ${inClass.length} | ${sure} | ${cls.plain} |`);
+    lines.push(
+      `| ${PLAIN_LABELS[id] ?? cls.name} | ${inClass.length} | ${howSure(inClass)} | ${cls.plain} |`,
+    );
   }
   lines.push('');
 
@@ -276,26 +271,50 @@ function renderFinding(lines: string[], f: FindingT, quoteFound: QuoteChecker | 
   lines.push('');
 }
 
-/** The two kinds to fix first: most criticals, then most findings. */
+function isHot(f: FindingT): boolean {
+  return f.reasoning?.exploitability === 'confirmed' || f.reasoning?.exploitability === 'likely';
+}
+
+/** Counts only this class's own verdicts, so a class nobody judged never reads as "0 confirmed". */
+function howSure(inClass: readonly FindingT[]): string {
+  const judged = inClass.filter((f) => f.reasoning).length;
+  if (judged === 0) return 'not checked yet';
+  const hot = inClass.filter(isHot).length;
+  const left = inClass.length - judged;
+  return `${hot} of ${judged} checked ${judged === 1 ? 'is' : 'are'} confirmed or likely${left ? `; ${left} not checked yet` : ''}`;
+}
+
+/**
+ * The two kinds to fix first: most confirmed or likely, then most criticals,
+ * then most findings. A kind whose every finding was judged closed is left out.
+ */
 function fixFirst(
   lines: string[],
   classes: readonly string[],
   findings: readonly FindingT[],
 ): void {
   const ranked = classes
-    .map((id) => ({
-      id,
-      critical: findings.filter((f) => f.vulnClass === id && f.severity === 'critical').length,
-      total: findings.filter((f) => f.vulnClass === id).length,
-    }))
-    .filter((c) => c.total > 0)
-    .sort((a, b) => b.critical - a.critical || b.total - a.total)
+    .map((id) => {
+      const inClass = findings.filter((f) => f.vulnClass === id);
+      return {
+        id,
+        hot: inClass.filter(isHot).length,
+        critical: inClass.filter((f) => f.severity === 'critical').length,
+        total: inClass.length,
+        cleared: inClass.every(
+          (f) =>
+            f.reasoning?.exploitability === 'not-exploitable' ||
+            f.reasoning?.exploitability === 'unlikely',
+        ),
+      };
+    })
+    .filter((c) => c.total > 0 && !c.cleared)
+    .sort((a, b) => b.hot - a.hot || b.critical - a.critical || b.total - a.total)
     .slice(0, 2);
-  if (ranked.length === 0) return;
-  const names = ranked.map((c) =>
-    (PLAIN_LABELS[c.id] ?? vulnClass(c.id as never).name).toLowerCase(),
-  );
-  lines.push(`**Fix first:** ${names.join(', then ')}.`);
+  // Two separate sentences: the labels are consequences, so "X, then Y" read as cause and effect.
+  const [first, next] = ranked.map((c) => PLAIN_LABELS[c.id] ?? vulnClass(c.id as never).name);
+  if (!first) return;
+  lines.push(`**Fix first:** ${first}.${next ? ` **Next:** ${next}.` : ''}`);
   lines.push('');
 }
 

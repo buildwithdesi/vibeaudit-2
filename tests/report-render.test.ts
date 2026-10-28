@@ -106,3 +106,98 @@ test('a reasoning record that names an unknown class still renders', () => {
   assert.ok(text.includes('## Someone can rewrite your database commands'));
   assert.ok(text.includes('This is a first pass.'), 'nothing was judged, and the report says so');
 });
+
+/** The demo run's shape: the secrets were judged fake, everything else was confirmed. */
+function demoFindings(): FindingT[] {
+  return [
+    finding('k1', 'secrets', 'server/config.js:8', 'not-exploitable'),
+    finding('k2', 'secrets', 'server/config.js:7', 'not-exploitable'),
+    finding('k3', 'secrets', 'server/config.js:8', 'not-exploitable'),
+    finding('q1', 'sql-injection', 'routes/users.js:9', 'confirmed'),
+    finding('q2', 'sql-injection', 'routes/users.js:15', 'confirmed'),
+    finding('a1', 'missing-auth', 'routes/users.js:9', 'confirmed'),
+    finding('a2', 'missing-auth', 'routes/users.js:15', 'confirmed'),
+    finding('c1', 'command-injection', 'routes/network.js:9', 'confirmed'),
+    finding('p1', 'path-traversal', 'routes/files.js:10', 'confirmed'),
+    finding('r1', 'ssrf', 'routes/preview.js:8'),
+  ];
+}
+
+const DEMO_CLASSES = [
+  'secrets',
+  'sql-injection',
+  'missing-auth',
+  'command-injection',
+  'path-traversal',
+];
+
+function fixFirstLine(text: string): string {
+  return text.split('\n').find((l) => l.startsWith('**Fix first:**')) ?? '';
+}
+
+function tableRow(text: string, label: string): string {
+  return text.split('\n').find((l) => l.startsWith(`| ${label} |`)) ?? '';
+}
+
+test('fix first follows the verdicts, not the raw critical count', () => {
+  const text = render(manifest(), demoFindings(), reasoningRecord(DEMO_CLASSES));
+  assert.equal(
+    fixFirstLine(text),
+    '**Fix first:** Someone can rewrite your database commands. **Next:** Anyone can reach things that should need a login.',
+  );
+  assert.ok(
+    tableRow(text, 'Passwords and keys sitting in the code').includes(
+      '| 3 | 0 of 3 checked are confirmed or likely |',
+    ),
+    tableRow(text, 'Passwords and keys sitting in the code'),
+  );
+  assert.ok(
+    tableRow(text, 'Someone can rewrite your database commands').includes(
+      '| 2 | 2 of 2 checked are confirmed or likely |',
+    ),
+  );
+});
+
+test('classes nobody judged read as not checked, and a cleared class is never fixed first', () => {
+  // `reason --max-findings 2` judged only the command and the file finding.
+  const findings = demoFindings().map((f) =>
+    f.id === 'c1' || f.id === 'p1' ? f : { ...f, reasoning: null },
+  );
+  const text = render(manifest(), findings, reasoningRecord(DEMO_CLASSES));
+  assert.equal(
+    fixFirstLine(text),
+    '**Fix first:** Someone can run commands on your server. **Next:** Someone can read files they should not see.',
+  );
+  for (const label of [
+    'Passwords and keys sitting in the code',
+    'Someone can rewrite your database commands',
+    'Anyone can reach things that should need a login',
+  ]) {
+    assert.ok(tableRow(text, label).includes('| not checked yet |'), tableRow(text, label));
+  }
+  assert.ok(
+    tableRow(text, 'Someone can run commands on your server').includes(
+      '| 1 of 1 checked is confirmed or likely |',
+    ),
+  );
+
+  // Only one class is real: the cleared secrets class must not take the second slot.
+  const oneHot = demoFindings().map((f) =>
+    f.reasoning && f.vulnClass !== 'secrets' && f.id !== 'q1'
+      ? { ...f, reasoning: { ...f.reasoning, exploitability: 'unlikely' as const } }
+      : f,
+  );
+  const line = fixFirstLine(render(manifest(), oneHot, reasoningRecord(DEMO_CLASSES)));
+  assert.equal(line, '**Fix first:** Someone can rewrite your database commands.');
+});
+
+test('a class with some findings unjudged says how many are left', () => {
+  const findings = demoFindings().map((f) => (f.id === 'q2' ? { ...f, reasoning: null } : f));
+  const text = render(manifest(), findings, reasoningRecord(DEMO_CLASSES));
+  assert.ok(
+    tableRow(text, 'Someone can rewrite your database commands').includes(
+      '| 1 of 1 checked is confirmed or likely; 1 not checked yet |',
+    ),
+    tableRow(text, 'Someone can rewrite your database commands'),
+  );
+});
