@@ -204,10 +204,19 @@ function afterPatch(
     : patch.rescanClean || patch.verifiedClean
       ? 'closed, but not green because the tests did not run or did not pass'
       : 'not green';
+  const rescan = patch.rescan.ran
+    ? `The scan ran again on the patched code: ${fixed.size} fixed, ${patch.rescan.remaining.length} still flagged by a rule, ${patch.rescan.introduced} new.`
+    : 'The scan could not run again on the patched code, so none of these fixes is confirmed yet.';
   lines.push(
-    `${who} patched ${plural(patched.length, 'finding')}${places !== patched.length ? ` in ${plural(places, 'place')}` : ''} on branch \`${patch.branch}\`. The scan ran again on the patched code: ${fixed.size} fixed, ${patch.rescan.remaining.length} still flagged by a rule, ${patch.rescan.introduced} new. Project tests: ${testsWord}${patch.tests.ran ? ` (${patch.tests.runner})` : ''}. Result: ${result}.`,
+    `${who} patched ${plural(patched.length, 'finding')}${places !== patched.length ? ` in ${plural(places, 'place')}` : ''} on branch \`${patch.branch}\`. ${rescan} Project tests: ${testsWord}${patch.tests.ran ? ` (${patch.tests.runner})` : ''}. Result: ${result}.`,
   );
   lines.push('');
+  if (patch.error) {
+    // The message can quote engine output, so it is masked like everything else here.
+    const why = redactSecrets(patch.error).text.replace(/\s+/g, ' ').trim();
+    lines.push(`**The patch loop stopped early:** ${why}`);
+    lines.push('');
+  }
   if (patch.verification.length) {
     lines.push(
       `The rules are pattern checks, so a fix they do not recognize keeps a flag. A reasoning model reviewed each still-flagged spot on the patched code: ${closed.size} of ${patch.verification.length} judged closed.`,
@@ -217,6 +226,11 @@ function afterPatch(
       lines.push(`- ${VERDICT_WORDS[v.exploitability] ?? v.exploitability} ${v.plainLanguage}`);
     }
     lines.push('');
+  }
+  if (!patch.rescan.ran) {
+    lines.push('The full diff is in `patch.diff` next to this report.');
+    lines.push('');
+    return;
   }
   const classOf = new Map<string, string>([
     ...patch.selected.map((s) => [s.id, s.vulnClass] as const),

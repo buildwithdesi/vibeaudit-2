@@ -286,3 +286,42 @@ test('after the patch, the counts add up and include findings fixed alongside a 
     assert.ok(text.includes(row), row);
   }
 });
+
+test('after a failed re-scan, the report says the scan did not run and why', () => {
+  const failed: PatchRecordT = {
+    ...demoPatch(),
+    rescan: {
+      ran: false,
+      before: demoPatch().rescan.before,
+      after: { total: 4, byClass: {} },
+      resolved: [],
+      remaining: ['p1', 'c1', 'a1', 'a2'],
+      introduced: 0,
+    },
+    tests: { ...demoPatch().tests, ran: false, passed: false, runner: 'none', command: '' },
+    verification: [],
+    verifiedClean: false,
+    green: false,
+    error:
+      'engine JSON could not be parsed: Unexpected end of JSON input near {"evidence":"key = sk_live_abcdefgh12345678',
+  };
+  const text = render(manifest(), demoFindings(), reasoningRecord(DEMO_CLASSES), failed);
+  const after = text.slice(text.indexOf('## After the patch'));
+  assert.ok(!after.includes('The scan ran again'), after);
+  assert.ok(after.includes('The scan could not run again on the patched code'), after);
+  assert.ok(after.includes('engine JSON could not be parsed'), 'the reason is shown');
+  assert.ok(!after.includes('sk_live_abcdefgh12345678'), 'a secret in the error is masked');
+  assert.ok(!after.includes('| Problem | Patched |'), 'no per-class table without a re-scan');
+  assert.ok(after.includes('Result: not green.'));
+});
+
+test('a patch loop that stopped early says so even when the re-scan ran', () => {
+  const stopped: PatchRecordT = {
+    ...demoPatch(),
+    green: false,
+    error: 'stopped before spending more: the model API answered 402',
+  };
+  const text = render(manifest(), demoFindings(), reasoningRecord(DEMO_CLASSES), stopped);
+  assert.ok(text.includes('The scan ran again on the patched code'));
+  assert.ok(text.includes('the model API answered 402'), 'the stop reason is shown');
+});
