@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { VulnClassId } from '../src/model/classes.ts';
 import type { FindingT, RunManifestT, SeverityT } from '../src/model/finding.ts';
+import type { PatchRecordT } from '../src/patch/loop.ts';
 import type { ReasoningRecordT } from '../src/reason/orchestrate.ts';
 import type { ExploitabilityT } from '../src/reason/schemas.ts';
 import { render } from '../src/report/proof-of-risk.ts';
@@ -200,4 +201,88 @@ test('a class with some findings unjudged says how many are left', () => {
     ),
     tableRow(text, 'Someone can rewrite your database commands'),
   );
+});
+
+/**
+ * The demo patch: four leads in four places, and the two SQL findings rode
+ * along as same-line siblings of the two login leads. The re-scan cleared
+ * four, and the two login leads stayed flagged but were judged closed.
+ */
+function demoPatch(): PatchRecordT {
+  const lead = (id: string, file: string, vulnClass: string) => ({
+    id,
+    file,
+    ruleId: vulnClass,
+    vulnClass,
+  });
+  return {
+    runId: '20261027T000000Z-demo-0000',
+    startedAt: '2026-10-28T01:00:00.000Z',
+    finishedAt: '2026-10-28T01:01:00.000Z',
+    backend: 'api',
+    workDir: '/nowhere/demo',
+    branch: 'vibeaudit2/patch-demo',
+    baseCommit: 'a'.repeat(40),
+    patchCommit: 'b'.repeat(40),
+    selected: [
+      lead('p1', 'routes/files.js', 'path-traversal'),
+      lead('c1', 'routes/network.js', 'command-injection'),
+      lead('a1', 'routes/users.js', 'missing-auth'),
+      lead('a2', 'routes/users.js', 'missing-auth'),
+    ],
+    outcomes: [],
+    rejectedFiles: [],
+    rescan: {
+      ran: true,
+      before: {
+        total: 4,
+        byClass: { 'path-traversal': 1, 'command-injection': 1, 'missing-auth': 2 },
+      },
+      after: { total: 2, byClass: { 'missing-auth': 2 } },
+      resolved: ['p1', 'c1', 'q1', 'q2'],
+      remaining: ['a1', 'a2'],
+      introduced: 0,
+    },
+    tests: {
+      ran: true,
+      passed: true,
+      runner: 'local',
+      command: 'npm test',
+      outputTail: '',
+      durationMs: 10,
+    },
+    verification: ['a1', 'a2'].map((findingId) => ({
+      findingId,
+      exploitability: 'not-exploitable',
+      confidence: 0.95,
+      plainLanguage: `Closed: ${findingId}.`,
+      usd: 0.01,
+    })),
+    rescanClean: false,
+    verifiedClean: true,
+    green: true,
+    error: null,
+    usd: 0.07,
+  };
+}
+
+test('after the patch, the counts add up and include findings fixed alongside a lead', () => {
+  const text = render(manifest(), demoFindings(), reasoningRecord(DEMO_CLASSES), demoPatch());
+  assert.ok(text.includes('## After the patch'));
+  assert.ok(
+    text.includes('Muse Spark patched 6 findings in 4 places on branch `vibeaudit2/patch-demo`.'),
+    text,
+  );
+  assert.ok(text.includes('The scan ran again on the patched code: 4 fixed, 2 still flagged'));
+  assert.ok(
+    text.includes('| Problem | Patched | Fixed | Still flagged | Judged closed on review |'),
+  );
+  for (const row of [
+    '| Someone can rewrite your database commands | 2 | 2 | 0 | 0 |',
+    '| Anyone can reach things that should need a login | 2 | 0 | 2 | 2 |',
+    '| Someone can run commands on your server | 1 | 1 | 0 | 0 |',
+    '| Someone can read files they should not see | 1 | 1 | 0 | 0 |',
+  ]) {
+    assert.ok(text.includes(row), row);
+  }
 });

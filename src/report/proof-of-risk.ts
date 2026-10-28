@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { lstat, readFile } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
 import { z } from 'zod';
-import { VULN_CLASS_IDS, vulnClass } from '../model/classes.ts';
+import { VULN_CLASS_IDS, VULN_CLASSES, vulnClass } from '../model/classes.ts';
 import { Finding, type FindingT, RunManifest, type RunManifestT } from '../model/finding.ts';
 import { isSecretFile, redactSecrets, safeResolve } from '../normalize/context.ts';
 import { PatchRecord, type PatchRecordT } from '../patch/loop.ts';
@@ -153,44 +153,7 @@ export function render(
     }
   }
 
-  if (patch?.patchCommit) {
-    lines.push('## After the patch');
-    lines.push('');
-    const who = patch.backend === 'muse-code' ? 'Muse Code' : 'Muse Spark';
-    const testsWord = patch.tests.ran ? (patch.tests.passed ? 'passed' : 'failed') : 'not run';
-    const closedOnReview = patch.verification.filter(
-      (v) => v.exploitability === 'not-exploitable' || v.exploitability === 'unlikely',
-    ).length;
-    const result = patch.green
-      ? 'green'
-      : patch.rescanClean || patch.verifiedClean
-        ? 'closed, but not green because the tests did not run or did not pass'
-        : 'not green';
-    lines.push(
-      `${who} patched ${patch.selected.length} findings on branch \`${patch.branch}\`. The scan ran again on the patched code: ${patch.rescan.resolved.length} fixed, ${patch.rescan.remaining.length} still flagged by a rule, ${patch.rescan.introduced} new. Project tests: ${testsWord}${patch.tests.ran ? ` (${patch.tests.runner})` : ''}. Result: ${result}.`,
-    );
-    lines.push('');
-    if (patch.verification.length) {
-      lines.push(
-        `The rules are pattern checks, so a fix they do not recognize keeps a flag. A reasoning model reviewed each still-flagged spot on the patched code: ${closedOnReview} of ${patch.verification.length} judged closed.`,
-      );
-      lines.push('');
-      for (const v of patch.verification) {
-        lines.push(`- ${VERDICT_WORDS[v.exploitability] ?? v.exploitability} ${v.plainLanguage}`);
-      }
-      lines.push('');
-    }
-    lines.push('| Problem | Patched | Still reported |');
-    lines.push('|---|---|---|');
-    for (const [cls, before] of Object.entries(patch.rescan.before.byClass)) {
-      lines.push(
-        `| ${PLAIN_LABELS[cls] ?? vulnClass(cls as never).name} | ${before} | ${patch.rescan.after.byClass[cls] ?? 0} |`,
-      );
-    }
-    lines.push('');
-    lines.push('The full diff is in `patch.diff` next to this report.');
-    lines.push('');
-  }
+  if (patch?.patchCommit) afterPatch(lines, patch, findings, classes);
 
   lines.push('## How this report was made');
   lines.push('');
@@ -211,6 +174,90 @@ export function render(
   );
   lines.push('');
   return lines.join('\n');
+}
+
+/**
+ * The patch section. Counts come from finding ids: a patch fixes the lead
+ * finding and any other finding on the same line, so "patched" means both,
+ * and every patched finding is either fixed or still flagged.
+ */
+function afterPatch(
+  lines: string[],
+  patch: PatchRecordT,
+  findings: readonly FindingT[],
+  classes: readonly string[],
+): void {
+  lines.push('## After the patch');
+  lines.push('');
+  const who = patch.backend === 'muse-code' ? 'Muse Code' : 'Muse Spark';
+  const testsWord = patch.tests.ran ? (patch.tests.passed ? 'passed' : 'failed') : 'not run';
+  const closed = new Set(
+    patch.verification
+      .filter((v) => v.exploitability === 'not-exploitable' || v.exploitability === 'unlikely')
+      .map((v) => v.findingId),
+  );
+  const fixed = new Set(patch.rescan.resolved);
+  const patched = [...new Set([...patch.rescan.resolved, ...patch.rescan.remaining])];
+  const places = patch.selected.length;
+  const result = patch.green
+    ? 'green'
+    : patch.rescanClean || patch.verifiedClean
+      ? 'closed, but not green because the tests did not run or did not pass'
+      : 'not green';
+  lines.push(
+    `${who} patched ${plural(patched.length, 'finding')}${places !== patched.length ? ` in ${plural(places, 'place')}` : ''} on branch \`${patch.branch}\`. The scan ran again on the patched code: ${fixed.size} fixed, ${patch.rescan.remaining.length} still flagged by a rule, ${patch.rescan.introduced} new. Project tests: ${testsWord}${patch.tests.ran ? ` (${patch.tests.runner})` : ''}. Result: ${result}.`,
+  );
+  lines.push('');
+  if (patch.verification.length) {
+    lines.push(
+      `The rules are pattern checks, so a fix they do not recognize keeps a flag. A reasoning model reviewed each still-flagged spot on the patched code: ${closed.size} of ${patch.verification.length} judged closed.`,
+    );
+    lines.push('');
+    for (const v of patch.verification) {
+      lines.push(`- ${VERDICT_WORDS[v.exploitability] ?? v.exploitability} ${v.plainLanguage}`);
+    }
+    lines.push('');
+  }
+  const classOf = new Map<string, string>([
+    ...patch.selected.map((s) => [s.id, s.vulnClass] as const),
+    ...findings.map((f) => [f.id, f.vulnClass] as const),
+  ]);
+  const rows = new Map<
+    string,
+    { patched: number; fixed: number; flagged: number; closed: number }
+  >();
+  for (const id of patched) {
+    const cls = classOf.get(id) ?? 'other';
+    const row = rows.get(cls) ?? { patched: 0, fixed: 0, flagged: 0, closed: 0 };
+    row.patched += 1;
+    if (fixed.has(id)) row.fixed += 1;
+    else row.flagged += 1;
+    if (!fixed.has(id) && closed.has(id)) row.closed += 1;
+    rows.set(cls, row);
+  }
+  const order = (cls: string) => (classes.includes(cls) ? classes.indexOf(cls) : classes.length);
+  const reviewed = patch.verification.length > 0;
+  lines.push(
+    `| Problem | Patched | Fixed | Still flagged |${reviewed ? ' Judged closed on review |' : ''}`,
+  );
+  lines.push(`|---|---|---|---|${reviewed ? '---|' : ''}`);
+  for (const [cls, row] of [...rows].sort((a, b) => order(a[0]) - order(b[0]))) {
+    lines.push(
+      `| ${label(cls)} | ${row.patched} | ${row.fixed} | ${row.flagged} |${reviewed ? ` ${row.closed} |` : ''}`,
+    );
+  }
+  lines.push('');
+  lines.push('The full diff is in `patch.diff` next to this report.');
+  lines.push('');
+}
+
+/** The plain label, for any id a record may hold, including one this version does not know. */
+function label(id: string): string {
+  return PLAIN_LABELS[id] ?? VULN_CLASSES.find((c) => c.id === id)?.name ?? id;
+}
+
+function plural(n: number, word: string): string {
+  return `${n} ${word}${n === 1 ? '' : 's'}`;
 }
 
 function renderFinding(lines: string[], f: FindingT, quoteFound: QuoteChecker | null): void {
