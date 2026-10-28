@@ -8,7 +8,7 @@ import { countBy, normalizeFindings } from '../normalize/index.ts';
 import { ReasoningBudget, rateFor } from '../reason/budget.ts';
 import { listFiles, relatedSnippets } from '../reason/context.ts';
 import type { ClientConfig } from '../reason/meta-client.ts';
-import { completeStructured } from '../reason/meta-client.ts';
+import { completeStructured, isFatalStatus, ModelApiError } from '../reason/meta-client.ts';
 import { buildExploitabilityMessages } from '../reason/prompts/exploitability.ts';
 import { ExploitVerdict } from '../reason/schemas.ts';
 import { topClasses } from '../report/summary.ts';
@@ -201,6 +201,12 @@ export async function runPatchLoop(runDir: string, options: PatchOptions): Promi
           info(
             `${finding.file}:${finding.line ?? '?'} ${finding.ruleId}: ${applied}/${outcome.edits.length} edits applied ($${outcome.usd.toFixed(4)})`,
           );
+          if (outcome.fatal) {
+            // Every later call would fail the same way. Keep what was applied, stop spending.
+            error = `stopped before spending more: ${outcome.note}`;
+            warn(error);
+            break;
+          }
         }
       } else if (backend === 'muse-code') {
         // Untracked files already in the copy (gitignored ones) are not the agent's.
@@ -289,7 +295,14 @@ export async function runPatchLoop(runDir: string, options: PatchOptions): Promi
   // model re-judges that exact spot with the patch in view. The scanner's
   // verdict and the model's verdict are both recorded, never merged.
   const verification: PatchRecordT['verification'] = [];
-  if (!options.dryRun && workDir && options.client && rate && comparison.remainingPairs.length) {
+  if (
+    !options.dryRun &&
+    error === null &&
+    workDir &&
+    options.client &&
+    rate &&
+    comparison.remainingPairs.length
+  ) {
     const files = await listFiles(workDir);
     for (const { beforeId, after } of comparison.remainingPairs) {
       const decision = budget.canSpend(after.file, 6_000, rate);
@@ -323,6 +336,11 @@ export async function runPatchLoop(runDir: string, options: PatchOptions): Promi
           `verify ${after.file}:${after.line ?? '?'} ${after.ruleId} -> ${result.data.exploitability} ($${usd.toFixed(4)})`,
         );
       } catch (caught) {
+        if (caught instanceof ModelApiError && isFatalStatus(caught.status)) {
+          error = `verification stopped before spending more: ${caught.message.slice(0, 300)}`;
+          warn(error);
+          break;
+        }
         warn(`verification failed for ${beforeId}: ${(caught as Error).message}`);
       }
     }

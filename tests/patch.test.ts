@@ -380,3 +380,69 @@ test('edits that add a scanner suppression together are rejected, however they a
   assert.equal(piggyback[0]?.applied, false);
   assert.ok(!readFileSync(files, 'utf8').includes('-next-line'));
 });
+
+/**
+ * Wrap a fake client so calls for one schema (or all) fail with an HTTP
+ * status, after the first `passFirst` of them went through.
+ */
+function failing(
+  client: ClientConfig,
+  status: number,
+  schemaName: string | null,
+  calls: string[],
+  passFirst = 0,
+): ClientConfig {
+  const inner = client.fetchImpl as typeof fetch;
+  let passed = 0;
+  const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+    const name = (
+      JSON.parse(String(init?.body)) as { response_format: { json_schema: { name: string } } }
+    ).response_format.json_schema.name;
+    if ((schemaName === null || name === schemaName) && passed++ >= passFirst) {
+      calls.push(name);
+      return new Response('{"error":"no"}', { status });
+    }
+    return inner(url, init);
+  }) as typeof fetch;
+  return { ...client, fetchImpl, maxRetries: 0 };
+}
+
+test('a 401 from the model stops the patch loop before the next finding is sent', async () => {
+  const runDir = await scanFresh('va2-patch-fatal-');
+  const calls: string[] = [];
+  const answered: string[] = [];
+  const record = await runPatchLoop(
+    runDir,
+    loopOptions(failing(fakePatcher(answered), 401, null, calls, 1), {
+      classes: ['sql-injection', 'command-injection', 'path-traversal'],
+      maxFindings: 10,
+    }),
+  );
+  assert.ok(record.selected.length >= 3, `selected ${record.selected.length}`);
+  assert.equal(answered.length, 1, 'the first finding was answered');
+  assert.equal(calls.length, 1, 'one failed call, then stop: no next finding, no verification');
+  assert.equal(record.outcomes.length, 2);
+  assert.match(record.error ?? '', /401/);
+  assert.equal(record.green, false);
+  const manifest = JSON.parse(readFileSync(join(runDir, 'manifest.json'), 'utf8')) as {
+    stages: { patch: string };
+  };
+  assert.equal(manifest.stages.patch, 'failed');
+});
+
+test('a 402 while re-judging still-flagged findings stops the verification loop', async () => {
+  const runDir = await scanFresh('va2-patch-fatal-verify-');
+  const calls: string[] = [];
+  const record = await runPatchLoop(
+    runDir,
+    loopOptions(failing(fakePatcher([]), 402, 'ExploitVerdict', calls), {
+      classes: ['sql-injection', 'command-injection', 'path-traversal'],
+      maxFindings: 10,
+    }),
+  );
+  assert.ok(record.patchCommit, 'the patch itself went through');
+  assert.ok(record.rescan.remaining.length >= 2, `remaining ${record.rescan.remaining.length}`);
+  assert.equal(calls.length, 1, 'one verification call, then stop');
+  assert.match(record.error ?? '', /402/);
+  assert.equal(record.green, false);
+});
