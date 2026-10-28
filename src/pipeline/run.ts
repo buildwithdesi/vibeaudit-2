@@ -1,13 +1,20 @@
 import { randomBytes } from 'node:crypto';
 import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { ENGINE_NAME, engineVersion, listEngineRules, runEngineScan } from '../engine/v1.ts';
+import {
+  ENGINE_NAME,
+  EngineError,
+  engineVersion,
+  listEngineRules,
+  runEngineScan,
+} from '../engine/v1.ts';
 import { cloneGitHub } from '../intake/clone.ts';
 import { buildGitHubTarget, parseTarget, type ScanTarget } from '../intake/target.ts';
 import type { FindingT, RunManifestT } from '../model/finding.ts';
 import { redactSecrets } from '../normalize/context.ts';
 import { countBy, normalizeFindings } from '../normalize/index.ts';
 import { renderSummary } from '../report/summary.ts';
+import { scrubbedEnv } from '../util/env.ts';
 import { slug, writeJson, writeText } from '../util/fs.ts';
 import { debug, info } from '../util/log.ts';
 
@@ -65,10 +72,19 @@ export async function runScan(input: string, options: ScanOptions): Promise<Scan
   const engine = await runEngineScan(repoDir, {
     sca: options.sca,
     trustTargetConfig: options.trustTargetConfig,
+    // Only the user's own folder can hold a config an earlier run parked.
+    recoverParkedConfig: target.kind === 'local',
   });
+  assertRuleListComplete(rules.length, engine.output.summary.rulesRun);
+  // Mask each string value, never the serialized text: inside JSON a quote is
+  // escaped as \", and a mask that swallows the backslash corrupts the file.
   await writeJson(
     join(runDir, 'engine-output.json'),
-    JSON.parse(redactSecrets(JSON.stringify(engine.output)).text),
+    JSON.parse(
+      JSON.stringify(engine.output, (_key, value: unknown) =>
+        typeof value === 'string' ? redactSecrets(value).text : value,
+      ),
+    ),
   );
   info(
     `engine: ${engine.output.summary.total} findings in ${engine.output.summary.filesScanned} files (${engine.durationMs} ms)`,
@@ -128,6 +144,19 @@ export async function runScan(input: string, options: ScanOptions): Promise<Scan
   return { runDir, manifest, findings };
 }
 
+/**
+ * The scan cannot run more rules than the engine lists. A shorter list means
+ * the list itself came back cut off, and the manifest and summary would
+ * quietly under-report coverage ("104 of 56 rules run"). Stop instead.
+ */
+export function assertRuleListComplete(rulesAvailable: number, rulesRun: number): void {
+  if (rulesAvailable < rulesRun) {
+    throw new EngineError(
+      `engine rule list is incomplete: ${rulesAvailable} rules listed, but the scan ran ${rulesRun}`,
+    );
+  }
+}
+
 function makeRunId(target: ScanTarget): string {
   const stamp = new Date()
     .toISOString()
@@ -136,11 +165,18 @@ function makeRunId(target: ScanTarget): string {
   return `${stamp}-${slug(target.label)}-${randomBytes(2).toString('hex')}`;
 }
 
+/**
+ * The folder may be someone else's repository, so git gets the same scrubbed
+ * environment as every other child process, and its fsmonitor setting (a
+ * command the repo's own config can name) is switched off.
+ */
 async function localCommit(dir: string): Promise<string | null> {
   try {
     const { execFile } = await import('node:child_process');
     const { promisify } = await import('node:util');
-    const { stdout } = await promisify(execFile)('git', ['-C', dir, 'rev-parse', 'HEAD'], {
+    const args = ['-C', dir, '-c', 'core.fsmonitor=false', 'rev-parse', 'HEAD'];
+    const { stdout } = await promisify(execFile)('git', args, {
+      env: scrubbedEnv({ GIT_CONFIG_NOSYSTEM: '1' }),
       timeout: 10_000,
       windowsHide: true,
     });

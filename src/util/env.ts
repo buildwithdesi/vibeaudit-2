@@ -1,6 +1,7 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { undoOnExit } from './exit.ts';
 
 /**
  * Child processes that touch a scanned repository (the engine, npm, Docker,
@@ -43,17 +44,24 @@ const PASS_THROUGH = [
   'DOCKER_HOST',
 ];
 
-const emptyConfigs: Record<string, string> = {};
+let emptyConfigDir: string | null = null;
 
 /** Path to an empty npm config file, one per role, so neither the repo's .npmrc nor the user's applies. */
 export function emptyNpmConfig(role: 'user' | 'global' = 'user'): string {
-  if (!emptyConfigs[role]) {
-    const dir = mkdtempSync(join(tmpdir(), 'va2-npmrc-'));
-    const file = join(dir, `${role}.npmrc`);
-    writeFileSync(file, '', 'utf8');
-    emptyConfigs[role] = file;
+  if (!emptyConfigDir) {
+    // One folder per process, removed however the process ends. The removal
+    // is registered before the folder exists, so no interrupt falls in between.
+    let dir: string | null = null;
+    undoOnExit(() => {
+      emptyConfigDir = null;
+      if (dir) rmSync(dir, { recursive: true, force: true });
+    });
+    dir = mkdtempSync(join(tmpdir(), 'va2-npmrc-'));
+    writeFileSync(join(dir, 'user.npmrc'), '', 'utf8');
+    writeFileSync(join(dir, 'global.npmrc'), '', 'utf8');
+    emptyConfigDir = dir;
   }
-  return emptyConfigs[role] as string;
+  return join(emptyConfigDir, `${role}.npmrc`);
 }
 
 export function scrubbedEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {

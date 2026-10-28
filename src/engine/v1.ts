@@ -1,9 +1,21 @@
-import { spawn } from 'node:child_process';
-import { access, readFile, rename } from 'node:fs/promises';
+import { type ChildProcess, spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+import {
+  closeSync,
+  lstatSync,
+  mkdtempSync,
+  openSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+} from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { V1Output, type V1OutputT } from '../model/finding.ts';
 import { scrubbedEnv } from '../util/env.ts';
+import { undoOnExit } from '../util/exit.ts';
 
 /**
  * The v1 engine (`@jackdog668/vibeaudit`) is prior work. 2.0 never copies its
@@ -69,6 +81,12 @@ export interface EngineScanOptions {
   sca?: boolean;
   /** Let the scanned repo's own .vibe-audit.json and inline suppressions apply. Off for untrusted repos. */
   trustTargetConfig?: boolean;
+  /**
+   * Put back a config that a killed earlier run left parked. Only for the
+   * user's own folder: in a fresh clone, a file under the parked name is the
+   * repo's own and must stay as it is.
+   */
+  recoverParkedConfig?: boolean;
   timeoutMs?: number;
 }
 
@@ -85,18 +103,21 @@ export async function runEngineScan(
   const args = [repoDir, '--format', 'json'];
   if (!options.sca) args.push('--skip-sca');
 
-  // Engine 1.4.0 always applies the scanned folder's own .vibe-audit.json.
-  // For an untrusted repo that is a way to hide findings, so the file is
-  // moved aside for the duration of the run unless the caller opts in.
+  // Engine 1.4.0 always applies the scanned folder's own .vibe-audit.json
+  // and has no switch to skip it. For an untrusted repo that is a way to
+  // hide findings, so the file is moved aside for the duration of the run
+  // unless the caller opts in.
   // Inline "vibe-audit-ignore" comments are still honored by 1.4.0; that
   // gap is recorded in the README until a v1 release adds a trust switch.
-  const hidden = options.trustTargetConfig ? null : await hideTargetConfig(repoDir);
+  const restoreConfig = options.trustTargetConfig
+    ? null
+    : hideTargetConfig(repoDir, options.recoverParkedConfig === true);
   const started = performance.now();
   let result: { stdout: string; stderr: string; exitCode: number };
   try {
     result = await runEngine(args, options.timeoutMs ?? 10 * 60_000);
   } finally {
-    if (hidden) await rename(hidden.moved, hidden.original);
+    restoreConfig?.();
   }
   const { stdout, stderr, exitCode } = result;
   const durationMs = Math.round(performance.now() - started);
@@ -117,49 +138,146 @@ export async function runEngineScan(
   return { output, durationMs, exitCode };
 }
 
-async function hideTargetConfig(
-  repoDir: string,
-): Promise<{ original: string; moved: string } | null> {
-  const original = join(repoDir, '.vibe-audit.json');
-  try {
-    await access(original);
-  } catch {
-    return null;
+const TARGET_CONFIG = '.vibe-audit.json';
+const PARKED_CONFIG = '.vibe-audit.json.untrusted';
+/** The name used when PARKED_CONFIG is taken. Only this tool ever writes it. */
+const PARKED_SUFFIXED = /^\.vibe-audit\.json\.untrusted-[0-9a-f]{8}$/;
+
+/**
+ * Park the folder's config under another name for the run. A local target is
+ * the user's own folder, so the move is undone however the process ends,
+ * Ctrl-C and kill included. A run killed outright (SIGKILL) leaves the file
+ * parked; with `recover`, the next scan of that folder puts it back before
+ * parking it again. Returns the restore step, or null when there is no
+ * config to hide.
+ */
+function hideTargetConfig(repoDir: string, recover: boolean): (() => void) | null {
+  const original = join(repoDir, TARGET_CONFIG);
+  const parked = join(repoDir, PARKED_CONFIG);
+  if (recover && !present(original)) {
+    const leftover = parkedLeftover(repoDir);
+    if (leftover) renameSync(leftover, original);
   }
-  const moved = join(repoDir, '.vibe-audit.json.untrusted');
-  await rename(original, moved);
-  return { original, moved };
+  if (!present(original)) return null;
+  // Never overwrite a file that already sits under the parked name.
+  const moved = present(parked) ? `${parked}-${randomBytes(4).toString('hex')}` : parked;
+  // Register first, then move: an interrupt that lands right after the move
+  // must already find the restore step, or the process dies without it.
+  let isParked = false;
+  const restore = undoOnExit(() => {
+    if (isParked) renameSync(moved, original);
+  });
+  try {
+    renameSync(original, moved);
+    isParked = true;
+  } catch (error) {
+    restore();
+    throw error;
+  }
+  return restore;
 }
 
-function runEngine(
+/**
+ * The config a killed run left parked. The suffixed name means the plain
+ * parked name was already taken when it was parked, so it wins; two suffixed
+ * names are ambiguous, and both are left alone.
+ */
+function parkedLeftover(repoDir: string): string | null {
+  const suffixed = readdirSync(repoDir).filter((name) => PARKED_SUFFIXED.test(name));
+  if (suffixed.length > 1) return null;
+  const [name] = suffixed;
+  if (name !== undefined) return join(repoDir, name);
+  const parked = join(repoDir, PARKED_CONFIG);
+  return present(parked) ? parked : null;
+}
+
+function present(path: string): boolean {
+  return lstatSync(path, { throwIfNoEntry: false }) !== undefined;
+}
+
+/**
+ * The v1 bin calls process.exit() as soon as it has printed. On Linux and
+ * macOS a write to a pipe is asynchronous, so whatever is still queued when
+ * the process exits is lost: the rule list came back short under load and
+ * any scan JSON past about 145 KB failed to parse. Writes to a file are
+ * synchronous on every platform, so the child writes straight into temp
+ * files, which are read back only after it has exited.
+ */
+async function runEngine(
   args: string[],
   timeoutMs: number,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  return new Promise((resolvePromise, reject) => {
-    const child = spawn(process.execPath, [engineBinPath(), ...args], {
-      env: scrubbedEnv(),
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
+  let dir: string | null = null;
+  let child: ChildProcess | null = null;
+  // Registered before anything exists, so an interrupt at any point finds it:
+  // stop the engine and drop its files.
+  const cleanup = undoOnExit(() => {
+    child?.kill();
+    if (dir) rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+  });
+  try {
+    dir = mkdtempSync(join(tmpdir(), 'va2-engine-'));
+    const outPath = join(dir, 'stdout');
+    const errPath = join(dir, 'stderr');
+    const exitCode = await spawnToFiles(args, outPath, errPath, timeoutMs, (spawned) => {
+      child = spawned;
     });
-    const out: Buffer[] = [];
-    const err: Buffer[] = [];
+    return {
+      stdout: await readFile(outPath, 'utf8'),
+      stderr: await readFile(errPath, 'utf8'),
+      exitCode,
+    };
+  } finally {
+    try {
+      cleanup();
+    } catch {
+      // Best effort: a failed cleanup must not hide the engine's own result or error.
+    }
+  }
+}
+
+/**
+ * Settles once: on 'close', on 'error', or on the timeout. The listeners never
+ * read the capture files, so a 'close' that arrives after an error or a kill
+ * is a no-op even though the files are already gone by then.
+ */
+function spawnToFiles(
+  args: string[],
+  outPath: string,
+  errPath: string,
+  timeoutMs: number,
+  onSpawn: (child: ChildProcess) => void,
+): Promise<number> {
+  return new Promise((resolvePromise, reject) => {
+    const outFd = openSync(outPath, 'w');
+    let child: ChildProcess;
+    try {
+      const errFd = openSync(errPath, 'w');
+      try {
+        child = spawn(process.execPath, [engineBinPath(), ...args], {
+          env: scrubbedEnv(),
+          windowsHide: true,
+          stdio: ['ignore', outFd, errFd],
+        });
+      } finally {
+        closeSync(errFd);
+      }
+    } finally {
+      // The child holds its own copies of both descriptors once spawn returns.
+      closeSync(outFd);
+    }
+    onSpawn(child);
     const timer = setTimeout(() => {
       child.kill();
       reject(new EngineError(`engine timed out after ${timeoutMs} ms`));
     }, timeoutMs);
-    child.stdout.on('data', (chunk: Buffer) => out.push(chunk));
-    child.stderr.on('data', (chunk: Buffer) => err.push(chunk));
     child.on('error', (error) => {
       clearTimeout(timer);
       reject(new EngineError(`engine could not start: ${error.message}`));
     });
     child.on('close', (code) => {
       clearTimeout(timer);
-      resolvePromise({
-        stdout: Buffer.concat(out).toString('utf8'),
-        stderr: Buffer.concat(err).toString('utf8'),
-        exitCode: code ?? -1,
-      });
+      resolvePromise(code ?? -1);
     });
   });
 }
