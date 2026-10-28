@@ -1,11 +1,13 @@
 import { type ChildProcess, spawn } from 'node:child_process';
-import { closeSync, openSync } from 'node:fs';
-import { access, mkdtemp, readFile, rename, rm } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
+import { closeSync, lstatSync, mkdtempSync, openSync, renameSync, rmSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { V1Output, type V1OutputT } from '../model/finding.ts';
 import { scrubbedEnv } from '../util/env.ts';
+import { undoOnExit } from '../util/exit.ts';
 
 /**
  * The v1 engine (`@jackdog668/vibeaudit`) is prior work. 2.0 never copies its
@@ -87,18 +89,19 @@ export async function runEngineScan(
   const args = [repoDir, '--format', 'json'];
   if (!options.sca) args.push('--skip-sca');
 
-  // Engine 1.4.0 always applies the scanned folder's own .vibe-audit.json.
-  // For an untrusted repo that is a way to hide findings, so the file is
-  // moved aside for the duration of the run unless the caller opts in.
+  // Engine 1.4.0 always applies the scanned folder's own .vibe-audit.json
+  // and has no switch to skip it. For an untrusted repo that is a way to
+  // hide findings, so the file is moved aside for the duration of the run
+  // unless the caller opts in.
   // Inline "vibe-audit-ignore" comments are still honored by 1.4.0; that
   // gap is recorded in the README until a v1 release adds a trust switch.
-  const hidden = options.trustTargetConfig ? null : await hideTargetConfig(repoDir);
+  const restoreConfig = options.trustTargetConfig ? null : hideTargetConfig(repoDir);
   const started = performance.now();
   let result: { stdout: string; stderr: string; exitCode: number };
   try {
     result = await runEngine(args, options.timeoutMs ?? 10 * 60_000);
   } finally {
-    if (hidden) await rename(hidden.moved, hidden.original);
+    restoreConfig?.();
   }
   const { stdout, stderr, exitCode } = result;
   const durationMs = Math.round(performance.now() - started);
@@ -119,18 +122,29 @@ export async function runEngineScan(
   return { output, durationMs, exitCode };
 }
 
-async function hideTargetConfig(
-  repoDir: string,
-): Promise<{ original: string; moved: string } | null> {
-  const original = join(repoDir, '.vibe-audit.json');
-  try {
-    await access(original);
-  } catch {
-    return null;
-  }
-  const moved = join(repoDir, '.vibe-audit.json.untrusted');
-  await rename(original, moved);
-  return { original, moved };
+const TARGET_CONFIG = '.vibe-audit.json';
+const PARKED_CONFIG = '.vibe-audit.json.untrusted';
+
+/**
+ * Park the folder's config under another name for the run. A local target is
+ * the user's own folder, so the move is undone however the process ends,
+ * Ctrl-C and kill included. A run killed outright (SIGKILL) leaves the file
+ * parked; the next scan of that folder puts it back before parking it again.
+ * Returns the restore step, or null when there is no config to hide.
+ */
+function hideTargetConfig(repoDir: string): (() => void) | null {
+  const original = join(repoDir, TARGET_CONFIG);
+  const parked = join(repoDir, PARKED_CONFIG);
+  if (!present(original) && present(parked)) renameSync(parked, original);
+  if (!present(original)) return null;
+  // Never overwrite a file that already sits under the parked name.
+  const moved = present(parked) ? `${parked}-${randomBytes(4).toString('hex')}` : parked;
+  renameSync(original, moved);
+  return undoOnExit(() => renameSync(moved, original));
+}
+
+function present(path: string): boolean {
+  return lstatSync(path, { throwIfNoEntry: false }) !== undefined;
 }
 
 /**
@@ -145,19 +159,31 @@ async function runEngine(
   args: string[],
   timeoutMs: number,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  const dir = await mkdtemp(join(tmpdir(), 'va2-engine-'));
+  // Created and registered in one synchronous step, so no interrupt can fall in between.
+  const dir = mkdtempSync(join(tmpdir(), 'va2-engine-'));
   const outPath = join(dir, 'stdout');
   const errPath = join(dir, 'stderr');
+  let child: ChildProcess | null = null;
+  // Also runs if this process is interrupted mid-scan: stop the engine, drop its files.
+  const cleanup = undoOnExit(() => {
+    child?.kill();
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+  });
   try {
-    const exitCode = await spawnToFiles(args, outPath, errPath, timeoutMs);
+    const exitCode = await spawnToFiles(args, outPath, errPath, timeoutMs, (spawned) => {
+      child = spawned;
+    });
     return {
       stdout: await readFile(outPath, 'utf8'),
       stderr: await readFile(errPath, 'utf8'),
       exitCode,
     };
   } finally {
-    // Best effort: a failed cleanup must not hide the engine's own error.
-    await rm(dir, { recursive: true, force: true, maxRetries: 3 }).catch(() => {});
+    try {
+      cleanup();
+    } catch {
+      // Best effort: a failed cleanup must not hide the engine's own result or error.
+    }
   }
 }
 
@@ -171,6 +197,7 @@ function spawnToFiles(
   outPath: string,
   errPath: string,
   timeoutMs: number,
+  onSpawn: (child: ChildProcess) => void,
 ): Promise<number> {
   return new Promise((resolvePromise, reject) => {
     const outFd = openSync(outPath, 'w');
@@ -190,6 +217,7 @@ function spawnToFiles(
       // The child holds its own copies of both descriptors once spawn returns.
       closeSync(outFd);
     }
+    onSpawn(child);
     const timer = setTimeout(() => {
       child.kill();
       reject(new EngineError(`engine timed out after ${timeoutMs} ms`));
