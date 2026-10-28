@@ -1,6 +1,8 @@
-import { spawn } from 'node:child_process';
-import { access, readFile, rename } from 'node:fs/promises';
+import { type ChildProcess, spawn } from 'node:child_process';
+import { closeSync, openSync } from 'node:fs';
+import { access, mkdtemp, readFile, rename, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { V1Output, type V1OutputT } from '../model/finding.ts';
 import { scrubbedEnv } from '../util/env.ts';
@@ -131,35 +133,74 @@ async function hideTargetConfig(
   return { original, moved };
 }
 
-function runEngine(
+/**
+ * The v1 bin calls process.exit() as soon as it has printed. On Linux and
+ * macOS a write to a pipe is asynchronous, so whatever is still queued when
+ * the process exits is lost: the rule list came back short under load and
+ * any scan JSON past about 145 KB failed to parse. Writes to a file are
+ * synchronous on every platform, so the child writes straight into temp
+ * files, which are read back only after it has exited.
+ */
+async function runEngine(
   args: string[],
   timeoutMs: number,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  const dir = await mkdtemp(join(tmpdir(), 'va2-engine-'));
+  const outPath = join(dir, 'stdout');
+  const errPath = join(dir, 'stderr');
+  try {
+    const exitCode = await spawnToFiles(args, outPath, errPath, timeoutMs);
+    return {
+      stdout: await readFile(outPath, 'utf8'),
+      stderr: await readFile(errPath, 'utf8'),
+      exitCode,
+    };
+  } finally {
+    // Best effort: a failed cleanup must not hide the engine's own error.
+    await rm(dir, { recursive: true, force: true, maxRetries: 3 }).catch(() => {});
+  }
+}
+
+/**
+ * Settles once: on 'close', on 'error', or on the timeout. The listeners never
+ * read the capture files, so a 'close' that arrives after an error or a kill
+ * is a no-op even though the files are already gone by then.
+ */
+function spawnToFiles(
+  args: string[],
+  outPath: string,
+  errPath: string,
+  timeoutMs: number,
+): Promise<number> {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(process.execPath, [engineBinPath(), ...args], {
-      env: scrubbedEnv(),
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    const out: Buffer[] = [];
-    const err: Buffer[] = [];
+    const outFd = openSync(outPath, 'w');
+    let child: ChildProcess;
+    try {
+      const errFd = openSync(errPath, 'w');
+      try {
+        child = spawn(process.execPath, [engineBinPath(), ...args], {
+          env: scrubbedEnv(),
+          windowsHide: true,
+          stdio: ['ignore', outFd, errFd],
+        });
+      } finally {
+        closeSync(errFd);
+      }
+    } finally {
+      // The child holds its own copies of both descriptors once spawn returns.
+      closeSync(outFd);
+    }
     const timer = setTimeout(() => {
       child.kill();
       reject(new EngineError(`engine timed out after ${timeoutMs} ms`));
     }, timeoutMs);
-    child.stdout.on('data', (chunk: Buffer) => out.push(chunk));
-    child.stderr.on('data', (chunk: Buffer) => err.push(chunk));
     child.on('error', (error) => {
       clearTimeout(timer);
       reject(new EngineError(`engine could not start: ${error.message}`));
     });
     child.on('close', (code) => {
       clearTimeout(timer);
-      resolvePromise({
-        stdout: Buffer.concat(out).toString('utf8'),
-        stderr: Buffer.concat(err).toString('utf8'),
-        exitCode: code ?? -1,
-      });
+      resolvePromise(code ?? -1);
     });
   });
 }
