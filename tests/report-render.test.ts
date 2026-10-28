@@ -205,6 +205,51 @@ test('a class with some findings unjudged says how many are left', () => {
   );
 });
 
+/** Triage set these aside before reasoning, so they carry no verdict. */
+function setAside(f: FindingT): FindingT {
+  return {
+    ...f,
+    reasoning: null,
+    triage: {
+      keep: false,
+      category: 'test-or-fixture',
+      reason: 'Only a test fixture reads this.',
+      confidence: 0.9,
+    },
+  };
+}
+
+test('findings triage set aside are counted as set aside, and never fixed first', () => {
+  // Only one class is real, and triage set the secrets aside.
+  const findings = demoFindings().map((f) =>
+    f.vulnClass === 'secrets'
+      ? setAside(f)
+      : f.reasoning && f.id !== 'q1'
+        ? { ...f, reasoning: { ...f.reasoning, exploitability: 'unlikely' as const } }
+        : f,
+  );
+  const text = render(manifest(), findings, reasoningRecord(DEMO_CLASSES));
+  assert.equal(fixFirstLine(text), '**Fix first:** Someone can rewrite your database commands.');
+  const secrets = tableRow(text, 'Passwords and keys sitting in the code');
+  assert.ok(secrets.includes('| 3 | 3 set aside |'), secrets);
+
+  // One judged, one set aside, one left over.
+  const mixed = [
+    ...demoFindings().filter((f) => f.vulnClass !== 'sql-injection'),
+    finding('q1', 'sql-injection', 'routes/users.js:9', 'confirmed'),
+    setAside(finding('q2', 'sql-injection', 'tests/users.test.js:15')),
+    finding('q3', 'sql-injection', 'routes/orders.js:4'),
+  ];
+  const row = tableRow(
+    render(manifest(), mixed, reasoningRecord(DEMO_CLASSES)),
+    'Someone can rewrite your database commands',
+  );
+  assert.ok(
+    row.includes('| 3 | 1 of 1 checked is confirmed or likely; 1 set aside; 1 not checked yet |'),
+    row,
+  );
+});
+
 /**
  * The demo patch: four leads in four places, and the two SQL findings rode
  * along as same-line siblings of the two login leads. The re-scan cleared

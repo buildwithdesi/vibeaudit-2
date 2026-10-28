@@ -434,18 +434,31 @@ function isHot(f: FindingT): boolean {
   return f.reasoning?.exploitability === 'confirmed' || f.reasoning?.exploitability === 'likely';
 }
 
+/** Triage dropped it before reasoning: checked, just not judged. */
+function isSetAside(f: FindingT): boolean {
+  return !f.reasoning && f.triage?.keep === false;
+}
+
 /** Counts only this class's own verdicts, so a class nobody judged never reads as "0 confirmed". */
 function howSure(inClass: readonly FindingT[]): string {
   const judged = inClass.filter((f) => f.reasoning).length;
-  if (judged === 0) return 'not checked yet';
-  const hot = inClass.filter(isHot).length;
-  const left = inClass.length - judged;
-  return `${hot} of ${judged} checked ${judged === 1 ? 'is' : 'are'} confirmed or likely${left ? `; ${left} not checked yet` : ''}`;
+  const aside = inClass.filter(isSetAside).length;
+  if (judged === 0 && aside === 0) return 'not checked yet';
+  const left = inClass.length - judged - aside;
+  const parts: string[] = [];
+  if (judged) {
+    const hot = inClass.filter(isHot).length;
+    parts.push(`${hot} of ${judged} checked ${judged === 1 ? 'is' : 'are'} confirmed or likely`);
+  }
+  if (aside) parts.push(`${aside} set aside`);
+  if (left) parts.push(`${left} not checked yet`);
+  return parts.join('; ');
 }
 
 /**
  * The two kinds to fix first: most confirmed or likely, then most criticals,
- * then most findings. A kind whose every finding was judged closed is left out.
+ * then most findings. A kind whose every finding was judged closed or set
+ * aside is left out.
  */
 function fixFirst(
   lines: string[],
@@ -463,7 +476,8 @@ function fixFirst(
         cleared: inClass.every(
           (f) =>
             f.reasoning?.exploitability === 'not-exploitable' ||
-            f.reasoning?.exploitability === 'unlikely',
+            f.reasoning?.exploitability === 'unlikely' ||
+            isSetAside(f),
         ),
       };
     })
