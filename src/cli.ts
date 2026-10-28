@@ -1,15 +1,17 @@
 #!/usr/bin/env node
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { engineVersion, listEngineRules } from './engine/v1.ts';
+import { VULN_CLASS_IDS } from './model/classes.ts';
+import { museAvailable } from './patch/backends.ts';
 import { runPatchLoop } from './patch/loop.ts';
 import { runScan } from './pipeline/run.ts';
-import { clientFromEnv, type ReasoningEffort } from './reason/meta-client.ts';
-import { DEFAULT_EFFORT, runReasoning } from './reason/orchestrate.ts';
+import { type ClientConfig, clientFromEnv, type ReasoningEffort } from './reason/meta-client.ts';
+import { DEFAULT_EFFORT, type ReasonOptions, runReasoning } from './reason/orchestrate.ts';
 import { renderProofOfRisk } from './report/proof-of-risk.ts';
 import { topClasses } from './report/summary.ts';
-import { info, setLogLevel } from './util/log.ts';
+import { info, setLogLevel, warn } from './util/log.ts';
 
 const USAGE = `vibeaudit2 <command> [options]
 
@@ -72,7 +74,8 @@ async function main(argv: string[]): Promise<number> {
       force: { type: 'boolean', default: false },
       effort: { type: 'string', default: DEFAULT_EFFORT.exploit },
       'budget-usd': { type: 'string', default: '5' },
-      'no-triage': { type: 'boolean', default: false },
+      // allowNegative turns --no-triage into triage: false.
+      triage: { type: 'boolean', default: true },
       backend: { type: 'string', default: 'auto' },
       'run-tests': { type: 'boolean', default: false },
       docker: { type: 'boolean', default: true },
@@ -90,12 +93,12 @@ async function main(argv: string[]): Promise<number> {
   const [command, target] = positionals;
   if (values.help || !command) {
     process.stdout.write(USAGE);
-    return command ? 0 : 2;
+    return values.help ? 0 : 2;
   }
 
   switch (command) {
     case 'version': {
-      process.stdout.write(`vibeaudit-2 engine ${await engineVersion()}\n`);
+      process.stdout.write(`vibeaudit-2 ${toolVersion()} (engine ${await engineVersion()})\n`);
       return 0;
     }
     case 'rules': {
@@ -111,11 +114,20 @@ async function main(argv: string[]): Promise<number> {
     case 'scan':
     case 'audit': {
       if (!target) return usageError(`${command} needs a target.`);
+      if (isNonGitHubUrl(target)) {
+        process.stderr.write(
+          `"${target}" is not a github.com URL. Only GitHub repositories can be cloned: pass https://github.com/<owner>/<repo>, <owner>/<repo>, or a local folder.\n`,
+        );
+        return 2;
+      }
       const contextLines = Number.parseInt(values.context, 10);
       if (!Number.isFinite(contextLines) || contextLines < 0 || contextLines > 50) {
         process.stderr.write('--context must be a number between 0 and 50.\n');
         return 2;
       }
+      // Check the reasoning flags now: a typo should not cost a scan.
+      const audit = command === 'audit' ? reasonOptions(values) : null;
+      if (typeof audit === 'number') return audit;
       const result = await runScan(target, {
         outDir: values.out,
         ref: values.ref ?? null,
@@ -131,16 +143,26 @@ async function main(argv: string[]): Promise<number> {
       info(`top classes: ${topClasses(result.findings).join(', ') || 'none'}`);
       info(`summary: ${result.runDir}/summary.md`);
       if (values.json) process.stdout.write(`${JSON.stringify(result.findings, null, 2)}\n`);
-      if (command === 'scan') return 0;
-      const code = await reason(result.runDir, values);
-      if (code !== 0) return code;
+      if (!audit) return 0;
+      if (audit.dryRun || audit.reason) {
+        const code = await reason(result.runDir, audit);
+        if (code !== 0) return code;
+      } else {
+        // The scan is done and the report needs no model, so write it rather than fail.
+        warn(
+          'No META_API_KEY: skipped reasoning, so the report has no exploitability verdicts. Set META_API_KEY in .env for verdicts, or pass --dry-run to save the prompts.',
+        );
+      }
       await renderProofOfRisk(result.runDir);
       info(`report: ${result.runDir}/report.md`);
       return 0;
     }
     case 'reason': {
       if (!target) return usageError('reason needs a run folder.');
-      return reason(resolveRunDir(target), values);
+      const runDir = resolveRunDir(target);
+      const options = reasonOptions(values);
+      if (typeof options === 'number') return options;
+      return reason(runDir, options);
     }
     case 'report': {
       if (!target) return usageError('report needs a run folder.');
@@ -156,18 +178,19 @@ async function main(argv: string[]): Promise<number> {
       if (backend !== 'auto' && backend !== 'api' && backend !== 'muse-code') {
         return usageError('--backend must be auto, api, or muse-code.');
       }
+      const classes = parseClasses(values.classes);
+      if (typeof classes === 'number') return classes;
+      const client = clientFromEnv('META');
+      const missing = missingPatchBackend(backend, client);
+      if (missing && !values['dry-run']) throw new Error(missing);
+      if (missing) warn(missing);
       const maxFindings = Number.parseInt(values['max-findings'] ?? '10', 10);
       const budgetUsd = Number.parseFloat(values['budget-usd']);
       const record = await runPatchLoop(runDir, {
         backend,
-        client: clientFromEnv('META'),
+        client,
         museModel: values['muse-model'],
-        classes: values.classes
-          ? values.classes
-              .split(',')
-              .map((c) => c.trim())
-              .filter(Boolean)
-          : null,
+        classes,
         maxFindings: Number.isFinite(maxFindings) && maxFindings > 0 ? maxFindings : 10,
         runTests: values['run-tests'],
         useDocker: values.docker,
@@ -179,6 +202,10 @@ async function main(argv: string[]): Promise<number> {
         `patch record: ${runDir}/patch.json${record.branch ? ` (branch ${record.branch})` : ''}`,
       );
       if (values['dry-run']) return 0;
+      // A loop that stopped with an error never reached the tests and has already said why.
+      if (values['run-tests'] && record.patchCommit && !record.tests.ran && !record.error) {
+        warn(`project tests not run: ${record.tests.outputTail}`);
+      }
       if (record.green) return 0;
       if (record.rescanClean) {
         info(
@@ -193,18 +220,21 @@ async function main(argv: string[]): Promise<number> {
   }
 }
 
-async function reason(
-  runDir: string,
-  values: {
-    'dry-run': boolean;
-    classes?: string | undefined;
-    'max-findings'?: string | undefined;
-    effort: string;
-    'budget-usd': string;
-    'no-triage': boolean;
-    force: boolean;
-  },
-): Promise<number> {
+async function reason(runDir: string, options: ReasonOptions): Promise<number> {
+  const record = await runReasoning(runDir, options);
+  return record.aborted ? 1 : 0;
+}
+
+/** The reasoning flags as options, or exit code 2 after saying which flag is wrong. */
+function reasonOptions(values: {
+  'dry-run': boolean;
+  classes?: string | undefined;
+  'max-findings'?: string | undefined;
+  effort: string;
+  'budget-usd': string;
+  triage: boolean;
+  force: boolean;
+}): ReasonOptions | number {
   if (!EFFORTS.has(values.effort as ReasoningEffort)) {
     process.stderr.write(`--effort must be one of ${[...EFFORTS].join(', ')}.\n`);
     return 2;
@@ -222,22 +252,59 @@ async function reason(
     );
     return 2;
   }
-  const record = await runReasoning(runDir, {
+  const classes = parseClasses(values.classes);
+  if (typeof classes === 'number') return classes;
+  return {
     reason: clientFromEnv('META'),
-    triage: values['no-triage'] ? null : clientFromEnv('TRIAGE'),
+    triage: values.triage ? clientFromEnv('TRIAGE') : null,
     dryRun: values['dry-run'],
-    classes: values.classes
-      ? values.classes
-          .split(',')
-          .map((c) => c.trim())
-          .filter(Boolean)
-      : null,
+    classes,
     maxFindings,
     effort: { ...DEFAULT_EFFORT, exploit: values.effort as ReasoningEffort },
     budget: { perRunUsd: budgetUsd },
     force: values.force,
-  });
-  return record.aborted ? 1 : 0;
+  };
+}
+
+/**
+ * --classes as known class ids, or null for the default. An unknown id would
+ * select nothing, still pay for the repository map, and leave a reasoning
+ * record the report cannot render, so it is exit code 2 instead.
+ */
+function parseClasses(raw: string | undefined): string[] | null | number {
+  if (!raw) return null;
+  const ids = raw
+    .split(',')
+    .map((c) => c.trim())
+    .filter(Boolean);
+  const known: readonly string[] = VULN_CLASS_IDS;
+  const unknown = ids.filter((id) => !known.includes(id));
+  if (ids.length > 0 && unknown.length === 0) return ids;
+  const problem = unknown.length
+    ? `Unknown --classes value: ${unknown.join(', ')}.`
+    : '--classes needs at least one class.';
+  process.stderr.write(`${problem} Valid classes: ${VULN_CLASS_IDS.join(', ')}.\n`);
+  return 2;
+}
+
+/**
+ * Why the patch loop would run with no backend, or null when it has one. The
+ * loop itself (resolveBackend) falls back to "none" silently and can then
+ * only report every finding as still flagged. These rules copy resolveBackend
+ * in src/patch/loop.ts: change both together.
+ */
+function missingPatchBackend(
+  backend: 'auto' | 'api' | 'muse-code',
+  client: ClientConfig | null,
+): string | null {
+  if (backend === 'muse-code') {
+    return museAvailable()
+      ? null
+      : 'muse CLI not found on PATH. Install Muse Code, or use --backend api with META_API_KEY in .env.';
+  }
+  return client
+    ? null
+    : 'No patch backend. Set META_API_KEY in .env, or pass --backend muse-code with Muse Code installed.';
 }
 
 function resolveRunDir(input: string): string {
@@ -246,6 +313,26 @@ function resolveRunDir(input: string): string {
     throw new Error(`${dir} is not a run folder (no manifest.json). Run "scan" first.`);
   }
   return dir;
+}
+
+/** package.json sits one folder above both src/cli.ts and dist/cli.js. */
+function toolVersion(): string {
+  const raw = readFileSync(new URL('../package.json', import.meta.url), 'utf8');
+  return (JSON.parse(raw) as { version?: string }).version ?? 'unknown';
+}
+
+/**
+ * A URL with a scheme whose host is not github.com. Without this, the target
+ * parser reads it as a relative path and reports "Folder not found". Every
+ * github.com form (https, ssh://git@, git://) is left to the parser, which
+ * decides which of them it can clone.
+ */
+function isNonGitHubUrl(target: string): boolean {
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(target)) return false;
+  if (/^[a-z][a-z0-9+.-]*:\/\/(?:[^@/]*@)?(?:www\.)?github\.com(?:[/:]|$)/i.test(target)) {
+    return false;
+  }
+  return !existsSync(resolve(target));
 }
 
 function usageError(message: string): number {
