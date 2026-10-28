@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { FindingT } from '../src/model/finding.ts';
-import { buildExploitabilityMessages } from '../src/reason/prompts/exploitability.ts';
+import {
+  buildExploitabilityMessages,
+  EXPLOITABILITY_SYSTEM,
+} from '../src/reason/prompts/exploitability.ts';
+import { REPO_MAP_SYSTEM } from '../src/reason/prompts/repo-map.ts';
 import { inline, repoData } from '../src/reason/prompts/shared.ts';
-import { buildTriageMessages } from '../src/reason/prompts/triage.ts';
+import { buildTriageMessages, TRIAGE_SYSTEM } from '../src/reason/prompts/triage.ts';
 
 /**
  * Repository text and earlier model output reach a prompt only inside a
@@ -110,7 +114,18 @@ test('a lone carriage return cannot start a new line in one-line text', () => {
   );
 });
 
-/** The user prompt with every repo-data block cut out: what the model reads as ours. */
+test('every system prompt treats block labels as repository data too', () => {
+  // A label carries a repo path, so it is as untrusted as the block it names.
+  for (const [name, system] of [
+    ['triage', TRIAGE_SYSTEM],
+    ['exploitability', EXPLOITABILITY_SYSTEM],
+    ['repo map', REPO_MAP_SYSTEM],
+  ] as const) {
+    assert.match(system, /label attribute[^.]*untrusted data too/i, name);
+  }
+});
+
+/** The user prompt with every repo-data block, label included, cut out: what the model reads as ours. */
 function outsideBlocks(prompt: string): string {
   return prompt.replace(/<repo-data label="[^"]*">\n[\s\S]*?\n<\/repo-data>/g, '[block]');
 }
