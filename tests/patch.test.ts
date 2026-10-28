@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
-import { cpSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { test } from 'node:test';
 import { applyEdits } from '../src/patch/edits.ts';
 import {
@@ -546,4 +554,268 @@ test('patch loop: a billed but unusable re-check is charged and never counts as 
     record.usd - answered >= 0.0025,
     `re-check spend charged: ${record.usd} vs ${answered} for the answered patch calls`,
   );
+});
+
+/**
+ * A folder named runs inside the app is the app's own code: the engine scans
+ * it, so the copy must hold it. Only the pipeline's own runs folder stays out.
+ * The fake fixes lib/ping.js and has nothing for src/runs/job.js.
+ */
+function runsFolderApp(): string {
+  const app = join(mkdtempSync(join(tmpdir(), 'va2-patch-runs-')), 'app');
+  const ping = (name: string): string =>
+    `import { exec } from 'node:child_process';\nexport function ${name}(req) {\n  exec(\`ping -c 1 \${req.query.host}\`);\n}\n`;
+  mkdirSync(join(app, 'src', 'runs'), { recursive: true });
+  writeFileSync(join(app, 'src', 'runs', 'job.js'), ping('run'));
+  mkdirSync(join(app, 'lib'), { recursive: true });
+  writeFileSync(join(app, 'lib', 'ping.js'), ping('ping'));
+  writeFileSync(
+    join(app, 'package.json'),
+    JSON.stringify({ name: 'a', type: 'module', scripts: { test: 'node -e "process.exit(0)"' } }),
+  );
+  return app;
+}
+
+function pingFixer(): ClientConfig {
+  const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
+    const edits = String(init?.body).includes('lib/ping.js:3')
+      ? [
+          {
+            file: 'lib/ping.js',
+            search: 'exec(`ping -c 1 ${req.query.host}`);',
+            replace: '// removed',
+            why: 'no shell',
+          },
+        ]
+      : [];
+    const plan = { edits, newDependencies: [], note: 'none', confidence: 0.5 };
+    return new Response(
+      JSON.stringify({
+        choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(plan) } }],
+        usage: { prompt_tokens: 10, completion_tokens: 10 },
+      }),
+      { status: 200 },
+    );
+  }) as typeof fetch;
+  return { baseUrl: 'https://fake.local/v1', apiKey: 'k', model: 'muse-spark-1.3', fetchImpl };
+}
+
+const RUNS_OPTIONS = {
+  classes: null,
+  maxFindings: 10,
+  runTests: true,
+  allowLocalTests: true,
+} satisfies Partial<PatchOptions>;
+
+test('a folder named runs in the app is copied and patched; the run folder itself is not', async () => {
+  const app = runsFolderApp();
+  const scan = await runScan(app, {
+    outDir: mkdtempSync(join(tmpdir(), 'va2-patch-runs-out-')),
+    ref: null,
+    sca: false,
+    trustTargetConfig: false,
+    contextLines: 4,
+  });
+  assert.ok(scan.findings.some((f) => f.file === 'src/runs/job.js'));
+  const pristine = join(mkdtempSync(join(tmpdir(), 'va2-patch-runs-pristine-')), 'run');
+  cpSync(scan.runDir, pristine, { recursive: true });
+
+  const record = await runPatchLoop(scan.runDir, loopOptions(pingFixer(), RUNS_OPTIONS));
+  assert.equal(record.error, null);
+  assert.ok(record.workDir && existsSync(join(record.workDir, 'src/runs/job.js')));
+  assert.ok(
+    record.outcomes.every((o) => o.note !== 'file not found'),
+    JSON.stringify(record.outcomes),
+  );
+  const job = record.selected.filter((s) => s.file === 'src/runs/job.js').map((s) => s.id);
+  assert.ok(job.length > 0);
+  for (const id of job) assert.ok(record.rescan.remaining.includes(id), `${id} still open`);
+  assert.equal(record.green, false);
+
+  // The run folder inside the target, where the CLI's default --out puts it for `scan .`.
+  const inside = join(app, 'runs', basename(scan.runDir));
+  cpSync(pristine, inside, { recursive: true });
+  const again = await runPatchLoop(inside, loopOptions(pingFixer(), RUNS_OPTIONS));
+  assert.equal(again.error, null);
+  assert.ok(again.workDir && existsSync(join(again.workDir, 'src/runs/job.js')));
+  assert.equal(existsSync(join(again.workDir, 'runs')), false, 'the run folder is not copied');
+});
+
+test('a finding whose file the patch never changed is never counted fixed', async () => {
+  const app = runsFolderApp();
+  const scan = await runScan(app, {
+    outDir: mkdtempSync(join(tmpdir(), 'va2-patch-gone-')),
+    ref: null,
+    sca: false,
+    trustTargetConfig: false,
+    contextLines: 4,
+  });
+  // Gone before the copy: the patcher cannot find it and the re-scan cannot see it.
+  rmSync(join(app, 'src', 'runs', 'job.js'));
+  const record = await runPatchLoop(scan.runDir, loopOptions(pingFixer(), RUNS_OPTIONS));
+  assert.ok(record.outcomes.some((o) => o.note === 'file not found'));
+  assert.ok(record.patchCommit, 'lib/ping.js was patched');
+  const job = record.selected.filter((s) => s.file === 'src/runs/job.js').map((s) => s.id);
+  assert.ok(job.length > 0);
+  for (const id of job) {
+    assert.ok(!record.rescan.resolved.includes(id), `${id} not resolved`);
+    assert.ok(record.rescan.remaining.includes(id), `${id} still open`);
+  }
+  assert.equal(record.rescanClean, false);
+  assert.equal(record.green, false);
+});
+
+test('findings triage set aside are never patched', async () => {
+  const runDir = await scanFresh('va2-patch-triage-');
+  const file = join(runDir, 'findings.json');
+  const findings = JSON.parse(readFileSync(file, 'utf8')) as Array<Record<string, unknown>>;
+  // Everything set aside except the SELECT on users.js line 9.
+  for (const f of findings) {
+    const keep = f.file === 'routes/users.js' && f.line === 9;
+    f.triage = {
+      keep,
+      category: keep ? 'real-code' : 'test-or-fixture',
+      reason: 'r',
+      confidence: 0.9,
+    };
+  }
+  writeFileSync(file, JSON.stringify(findings));
+  const record = await runPatchLoop(
+    runDir,
+    loopOptions(fakePatcher([]), { classes: null, maxFindings: 10, dryRun: true }),
+  );
+  assert.ok(record.selected.length > 0);
+  assert.ok(
+    record.selected.every((s) => s.file === 'routes/users.js'),
+    JSON.stringify(record.selected),
+  );
+
+  for (const f of findings)
+    f.triage = { keep: false, category: 'dead-code', reason: 'r', confidence: 0.9 };
+  writeFileSync(file, JSON.stringify(findings));
+  const none = await runPatchLoop(
+    runDir,
+    loopOptions(fakePatcher([]), { classes: null, maxFindings: 10, dryRun: true }),
+  );
+  assert.deepEqual(none.selected, []);
+});
+
+/** Run with the log on and return what it wrote to stderr. */
+async function captureStderr<T>(fn: () => Promise<T>): Promise<{ value: T; text: string }> {
+  const write = process.stderr.write.bind(process.stderr);
+  let text = '';
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    text += String(chunk);
+    return true;
+  }) as typeof process.stderr.write;
+  setLogLevel('normal');
+  try {
+    return { value: await fn(), text };
+  } finally {
+    setLogLevel('quiet');
+    process.stderr.write = write;
+  }
+}
+
+test('a closed patch that stopped on an error says so, not that the tests failed', async () => {
+  const runDir = await scanFresh('va2-patch-closed-error-');
+  let calls = 0;
+  const fetchImpl = (async () => {
+    calls += 1;
+    if (calls > 1) return new Response('{"error":"insufficient credit"}', { status: 402 });
+    const plan = {
+      edits: [
+        {
+          file: 'routes/users.js',
+          search: SQL_BEFORE,
+          replace:
+            "const rows = await db.query('SELECT * FROM users WHERE id = $1', [req.params.id]);",
+          why: 'p',
+        },
+        {
+          file: 'routes/users.js',
+          search: "await db.query('DELETE FROM users WHERE id = ' + req.params.id);",
+          replace: "await db.query('DELETE FROM users WHERE id = $1', [req.params.id]);",
+          why: 'p',
+        },
+      ],
+      newDependencies: [],
+      note: 'both lines',
+      confidence: 0.9,
+    };
+    return new Response(
+      JSON.stringify({
+        choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(plan) } }],
+        usage: { prompt_tokens: 1500, completion_tokens: 200 },
+      }),
+      { status: 200 },
+    );
+  }) as typeof fetch;
+  const client = { ...fakePatcher([]), fetchImpl, maxRetries: 0 };
+  const { value: record, text } = await captureStderr(() =>
+    runPatchLoop(
+      runDir,
+      loopOptions(client, { maxFindings: 10, runTests: true, allowLocalTests: true }),
+    ),
+  );
+  assert.ok(record.rescanClean && record.tests.ran && record.tests.passed, text);
+  assert.match(record.error ?? '', /402/);
+  assert.equal(record.green, false);
+  const line = text.split('\n').find((l) => l.startsWith('patch loop ')) ?? '';
+  assert.match(line, /^patch loop CLOSED, not green because the patch loop stopped early: /);
+  assert.doesNotMatch(line, /tests not run or failed/);
+});
+
+test('an edit may not write a secret mask placeholder into the code', async () => {
+  const dir = freshCopy();
+  const config = join(dir, 'server/config.js');
+  const original = readFileSync(config, 'utf8');
+  const masked = await applyEdits(
+    dir,
+    [
+      {
+        file: 'server/config.js',
+        search: "password: 'Winter2026Prod!',",
+        replace: "password: '[REDACTED:15]',",
+        why: 'a',
+      },
+    ],
+    { allowedFiles: ['server/config.js'] },
+  );
+  assert.equal(masked[0]?.applied, false);
+  assert.match(masked[0]?.reason ?? '', /mask placeholder/);
+  assert.equal(readFileSync(config, 'utf8'), original);
+
+  // A search that already holds one cannot carry a second one in.
+  writeFileSync(config, `${original}// Logs print [REDACTED] in place of a secret.\n`);
+  const piggyback = await applyEdits(
+    dir,
+    [
+      {
+        file: 'server/config.js',
+        search: '// Logs print [REDACTED] in place of a secret.',
+        replace:
+          "// Logs print [REDACTED] in place of a secret.\nexport const key = '[REDACTED:20]';",
+        why: 'b',
+      },
+    ],
+    { allowedFiles: ['server/config.js'] },
+  );
+  assert.equal(piggyback[0]?.applied, false);
+  assert.ok(!readFileSync(config, 'utf8').includes('[REDACTED:20]'));
+
+  // Moving text that already holds one is still fine.
+  const kept = await applyEdits(
+    dir,
+    [
+      {
+        file: 'server/config.js',
+        search: '// Logs print [REDACTED] in place of a secret.',
+        replace: '// Log lines print [REDACTED] in place of a secret.',
+        why: 'c',
+      },
+    ],
+    { allowedFiles: ['server/config.js'] },
+  );
+  assert.equal(kept[0]?.applied, true, kept[0]?.reason);
 });

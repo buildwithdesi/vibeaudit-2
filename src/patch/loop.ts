@@ -1,6 +1,6 @@
-import { cpSync, existsSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, realpathSync, rmSync } from 'node:fs';
 import { lstat, readFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { z } from 'zod';
 import { runEngineScan } from '../engine/v1.ts';
 import { Finding, type FindingT, RunManifest } from '../model/finding.ts';
@@ -92,8 +92,12 @@ export const PatchRecord = z.object({
     ran: z.boolean(),
     before: z.object({ total: z.number().int(), byClass: z.record(z.string(), z.number().int()) }),
     after: z.object({ total: z.number().int(), byClass: z.record(z.string(), z.number().int()) }),
-    resolved: z.array(z.string()).describe('selected finding ids that no longer appear'),
-    remaining: z.array(z.string()).describe('selected finding ids still reported'),
+    resolved: z
+      .array(z.string())
+      .describe('selected finding ids that no longer appear, in files the patch changed'),
+    remaining: z
+      .array(z.string())
+      .describe('selected finding ids still reported, or in a file the patch never changed'),
     introduced: z
       .number()
       .int()
@@ -126,7 +130,7 @@ export const PatchRecord = z.object({
 });
 export type PatchRecordT = z.infer<typeof PatchRecord>;
 
-const COPY_SKIP = new Set(['node_modules', '.git', 'dist', 'build', '.next', 'coverage', 'runs']);
+const COPY_SKIP = new Set(['node_modules', '.git', 'dist', 'build', '.next', 'coverage']);
 
 export async function runPatchLoop(runDir: string, options: PatchOptions): Promise<PatchRecordT> {
   const startedAt = new Date().toISOString();
@@ -144,7 +148,11 @@ export async function runPatchLoop(runDir: string, options: PatchOptions): Promi
         (f) =>
           f.reasoning?.exploitability === 'confirmed' || f.reasoning?.exploitability === 'likely',
       )
-    : findings.filter((f) => f.severity === 'critical' && classes.includes(f.vulnClass));
+    : findings.filter(
+        // Triage set these aside, and the report says so; the patch leaves them too.
+        (f) =>
+          f.severity === 'critical' && classes.includes(f.vulnClass) && f.triage?.keep !== false,
+      );
   const selected = dedupeByLocation(pool.filter((f) => classes.includes(f.vulnClass))).slice(
     0,
     options.maxFindings,
@@ -167,6 +175,7 @@ export async function runPatchLoop(runDir: string, options: PatchOptions): Promi
   let error: string | null = null;
   let afterFindings: FindingT[] | null = null;
   let lineMap = parseUnifiedDiff('');
+  let patchedFiles = new Set<string>();
   let tests: TestRunResult = {
     ran: false,
     passed: false,
@@ -254,6 +263,7 @@ export async function runPatchLoop(runDir: string, options: PatchOptions): Promi
         lineMap = parseUnifiedDiff(
           await git(workDir, ['diff', '--no-ext-diff', '-U0', baseCommit]),
         );
+        patchedFiles = new Set((await changedFiles(workDir, baseCommit)).tracked);
       }
       // Masked like every other artifact; the exact diff stays on the sandbox branch.
       await writeText(
@@ -297,7 +307,19 @@ export async function runPatchLoop(runDir: string, options: PatchOptions): Promi
   const comparison = afterFindings
     ? compareScans(findings, afterFindings, selectedIds, lineMap)
     : { resolved: [], remaining: selected.map((f) => f.id), remainingPairs: [], introduced: 0 };
-  const { resolved, remaining, introduced } = comparison;
+  const { introduced } = comparison;
+  // Fixed means gone from a file the patch changed. A finding that vanished
+  // from an untouched file (the patcher could not find it, say) was never
+  // patched, so it stays open.
+  const fileOf = new Map(findings.map((f) => [f.id, f.file.replace(/\\/g, '/')]));
+  const unpatched = comparison.resolved.filter((id) => !patchedFiles.has(fileOf.get(id) ?? ''));
+  const resolved = comparison.resolved.filter((id) => !unpatched.includes(id));
+  const remaining = [...comparison.remaining, ...unpatched];
+  if (unpatched.length) {
+    warn(
+      `${unpatched.length} finding(s) left the re-scan from a file the patch never changed; counted as still open`,
+    );
+  }
 
   // A rule is a heuristic. When it still fires on patched code, the reasoning
   // model re-judges that exact spot with the patch in view. The scanner's
@@ -366,9 +388,9 @@ export async function runPatchLoop(runDir: string, options: PatchOptions): Promi
       (v) => v.exploitability === 'not-exploitable' || v.exploitability === 'unlikely',
     );
   const rescanClean = afterFindings !== null && remaining.length === 0 && introduced === 0;
-  const closed =
-    afterFindings !== null && introduced === 0 && (remaining.length === 0 || verifiedClean);
-  const green = closed && tests.ran && tests.passed && error === null;
+  const closed = isClosed({ rescanClean, verifiedClean, rescan: { introduced } });
+  const blockers = greenBlockers({ error, tests });
+  const green = closed && blockers.length === 0;
 
   const record: PatchRecordT = {
     runId: manifest.runId,
@@ -434,9 +456,32 @@ export async function runPatchLoop(runDir: string, options: PatchOptions): Promi
   info(
     options.dryRun
       ? `dry run: ${selected.length} findings would be patched with the ${backend} backend`
-      : `patch loop ${green ? 'GREEN' : closed ? 'CLOSED, tests not run or failed' : 'NOT GREEN'}: ${resolved.length} resolved, ${remaining.length} still flagged${verification.length ? ` (${verification.filter((v) => v.exploitability === 'not-exploitable' || v.exploitability === 'unlikely').length} judged closed on review)` : ''}, ${introduced} introduced, tests ${tests.ran ? (tests.passed ? 'passed' : 'failed') : 'not run'}, $${record.usd.toFixed(4)}`,
+      : `patch loop ${green ? 'GREEN' : closed ? `CLOSED, not green because ${blockers.join(' and ')}` : 'NOT GREEN'}: ${resolved.length} resolved, ${remaining.length} still flagged${verification.length ? ` (${verification.filter((v) => v.exploitability === 'not-exploitable' || v.exploitability === 'unlikely').length} judged closed on review)` : ''}, ${introduced} introduced, tests ${tests.ran ? (tests.passed ? 'passed' : 'failed') : 'not run'}, $${record.usd.toFixed(4)}`,
   );
   return record;
+}
+
+/**
+ * Closed as the loop counts it: every patched finding gone or judged closed
+ * on the patched code, and nothing new.
+ */
+export function isClosed(record: {
+  rescanClean: boolean;
+  verifiedClean: boolean;
+  rescan: { introduced: number };
+}): boolean {
+  return record.rescanClean || (record.verifiedClean && record.rescan.introduced === 0);
+}
+
+/**
+ * Why a closed patch is still not green: an early stop first, then the
+ * tests. The loop line and the CLI both say it from this list.
+ */
+export function greenBlockers(record: Pick<PatchRecordT, 'error' | 'tests'>): string[] {
+  return [
+    ...(record.error ? ['the patch loop stopped early'] : []),
+    ...(record.tests.ran && record.tests.passed ? [] : ['the tests did not run or did not pass']),
+  ];
 }
 
 /** GitHub targets are already the pipeline's clone. Local folders are copied in, never patched in place. */
@@ -448,12 +493,45 @@ async function workingCopy(
   if (kind === 'github') return targetPath;
   const dest = resolve(runDir, 'repo');
   if (!existsSync(dest)) {
-    cpSync(targetPath, dest, {
-      recursive: true,
-      filter: (src) => !COPY_SKIP.has(src.split(/[\\/]/).pop() ?? ''),
-    });
+    const src = resolve(targetPath);
+    const real = (p: string): string => {
+      try {
+        return realpathSync(p);
+      } catch {
+        return p;
+      }
+    };
+    // The pipeline's runs folder, or this run's own folder when runs land in the target root.
+    const rel =
+      within(real(src), real(dirname(resolve(runDir)))) ?? within(real(src), real(resolve(runDir)));
+    copyTarget(src, dest, rel === null ? null : join(src, rel));
   }
   return dest;
+}
+
+/** `path` relative to `root` when it lies strictly inside it, otherwise null. */
+function within(root: string, path: string): string | null {
+  const rel = relative(root, path);
+  return rel && rel.split(sep)[0] !== '..' && !isAbsolute(rel) ? rel : null;
+}
+
+/**
+ * Copy a local target without build output or the pipeline's runs folder.
+ * That folder is skipped by its path, not its name: the engine scans every
+ * other folder called runs, so the copy must hold them. cpSync refuses a
+ * destination inside its source even when a filter would skip it, so the
+ * folders that lead to the runs folder are copied one entry at a time.
+ */
+function copyTarget(src: string, dest: string, skip: string | null): void {
+  if (skip === null || within(src, skip) === null) {
+    cpSync(src, dest, { recursive: true, filter: (p) => !COPY_SKIP.has(basename(p)) });
+    return;
+  }
+  mkdirSync(dest, { recursive: true });
+  for (const name of readdirSync(src)) {
+    const from = join(src, name);
+    if (from !== skip && !COPY_SKIP.has(name)) copyTarget(from, join(dest, name), skip);
+  }
 }
 
 function resolveBackend(options: PatchOptions): 'api' | 'muse-code' | 'none' {
