@@ -164,3 +164,28 @@ test('a Contributor-tier model or a plain-http endpoint is refused', async () =>
   assert.equal(http.code, 1);
   assert.match(http.stderr, /META_BASE_URL must start with https:\/\//);
 });
+
+test('--no-triage skips triage even when TRIAGE_* is configured', async () => {
+  const triageEnv = {
+    TRIAGE_BASE_URL: 'https://triage.invalid/v1',
+    TRIAGE_API_KEY: 'dummy',
+    TRIAGE_MODEL: 'meta/muse-glimmer-30b',
+  };
+  const withTriage = freshRun('triage-on');
+  const on = await cli(['reason', withTriage, '--dry-run', '--quiet'], triageEnv);
+  assert.equal(on.code, 0, on.stderr);
+  assert.ok(promptNames(withTriage).some((name) => name.startsWith('triage-')));
+
+  const withoutTriage = freshRun('triage-off');
+  const off = await cli(
+    ['reason', withoutTriage, '--dry-run', '--no-triage', '--quiet'],
+    triageEnv,
+  );
+  assert.equal(off.code, 0, off.stderr);
+  assert.deepEqual(
+    promptNames(withoutTriage).filter((name) => name.startsWith('triage-')),
+    [],
+  );
+  const record = readJson(join(withoutTriage, 'reasoning.dry-run.json'));
+  assert.deepEqual(record.models, { reason: null, triage: null });
+});

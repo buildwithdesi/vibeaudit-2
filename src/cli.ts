@@ -72,7 +72,8 @@ async function main(argv: string[]): Promise<number> {
       force: { type: 'boolean', default: false },
       effort: { type: 'string', default: DEFAULT_EFFORT.exploit },
       'budget-usd': { type: 'string', default: '5' },
-      'no-triage': { type: 'boolean', default: false },
+      // allowNegative turns --no-triage into triage: false.
+      triage: { type: 'boolean', default: true },
       backend: { type: 'string', default: 'auto' },
       'run-tests': { type: 'boolean', default: false },
       docker: { type: 'boolean', default: true },
@@ -201,7 +202,7 @@ async function reason(
     'max-findings'?: string | undefined;
     effort: string;
     'budget-usd': string;
-    'no-triage': boolean;
+    triage: boolean;
     force: boolean;
   },
 ): Promise<number> {
@@ -224,7 +225,7 @@ async function reason(
   }
   const record = await runReasoning(runDir, {
     reason: clientFromEnv('META'),
-    triage: values['no-triage'] ? null : clientFromEnv('TRIAGE'),
+    triage: values.triage ? clientFromEnv('TRIAGE') : null,
     dryRun: values['dry-run'],
     classes: values.classes
       ? values.classes
