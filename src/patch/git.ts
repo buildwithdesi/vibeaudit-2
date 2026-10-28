@@ -1,6 +1,4 @@
 import { execFile } from 'node:child_process';
-import { mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { scrubbedEnv } from '../util/env.ts';
 
@@ -8,20 +6,20 @@ const run = promisify(execFile);
 
 /**
  * Git helpers scoped to one working tree, always the pipeline's own copy and
- * never the user's checkout. Hooks are disabled through an empty hooks
- * folder, signing is off, and the tree's own config cannot point git at an
- * external diff or filter program.
+ * never the user's checkout. Hooks are disabled, signing is off, and the
+ * tree's own config cannot point git at an external diff or filter program.
+ *
+ * The hooks path is a regular file, this node binary, so no `<path>/<hook>`
+ * can ever exist. A hooks folder next to the copy could be filled by
+ * anything that writes there, such as a coding agent, and `--no-verify` does
+ * not skip post-commit, post-checkout or reference-transaction hooks.
  */
-async function hooksDir(repoDir: string): Promise<string> {
-  const dir = join(repoDir, '..', 'no-hooks');
-  await mkdir(dir, { recursive: true });
-  return dir;
-}
+const NO_HOOKS = process.execPath;
 
 export async function git(repoDir: string, args: string[], timeoutMs = 60_000): Promise<string> {
   const safety = [
     '-c',
-    `core.hooksPath=${await hooksDir(repoDir)}`,
+    `core.hooksPath=${NO_HOOKS}`,
     '-c',
     'core.fsmonitor=false',
     '-c',
