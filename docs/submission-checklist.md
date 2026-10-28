@@ -6,7 +6,7 @@ Deadline: Wednesday November 4, 2026, 9:00 PM ET (EST by then; 02:00 UTC on Nove
 
 - [ ] Claim the $150 Model API credit through the claim form (closes at the same moment as submissions). Needs name, application email, Model API Team ID.
 - [ ] Add a payment method on the Model API account; the credit does not apply without one.
-- [ ] `META_API_KEY` in `.env`, never committed. `git ls-files | grep .env` must print only `.env.example`.
+- [ ] `META_API_KEY` in `.env`, never committed. `git ls-files | grep .env` must print only `.env.example`, and `git grep -n "LLM_" $(git rev-list --all)` must print nothing. A key did land in `.env.example` on October 27; it was removed from the tip and rotated. Decide whether to rewrite history before submitting.
 - [ ] Live reasoning run on the demo repo completed; `report.md` reads well to a non-security reader.
 - [ ] Patch loop green on the demo repo. If not by October 31, cut to two classes and say so in the README and the video.
 - [ ] Before and after artifacts copied into `demo/` and committed (summary, report, patch diff, manifests).

@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
@@ -23,6 +24,24 @@ const VERDICT_WORDS: Record<string, string> = {
   'needs-runtime-check': 'Undecided. A runtime setting decides this one.',
 };
 
+/** The founder-facing name for each class, said before the technical one. */
+const PLAIN_LABELS: Record<string, string> = {
+  secrets: 'Passwords and keys sitting in the code',
+  'sql-injection': 'Someone can rewrite your database commands',
+  'command-injection': 'Someone can run commands on your server',
+  'missing-auth': 'Anyone can reach things that should need a login',
+  'path-traversal': 'Someone can read files they should not see',
+  ssrf: 'Your server can be made to call other systems',
+  xss: 'Someone can run their own script in your users’ browsers',
+  'input-handling': 'Visitor input is trusted when it should not be',
+  'auth-sessions-crypto': 'Logins and sessions are easier to break than they should be',
+  'webhooks-payments': 'Payment and webhook messages are trusted without proof',
+  'data-exposure': 'Private data leaks through logs, errors or responses',
+  'hardening-config': 'Protective settings are missing',
+  'supply-chain': 'A dependency is risky',
+  'ai-safety': 'The AI feature can be hijacked or run up a bill',
+};
+
 const POSITION_WORDS: Record<string, string> = {
   'anonymous-internet': 'anyone on the internet, no account needed',
   'authenticated-user': 'any signed-in user',
@@ -30,6 +49,8 @@ const POSITION_WORDS: Record<string, string> = {
   'local-only': 'someone with access to the server itself',
   none: 'no one, based on what the code shows',
 };
+
+export type QuoteChecker = (file: string, quote: string) => boolean;
 
 export async function renderProofOfRisk(runDir: string): Promise<string> {
   const manifest = RunManifest.parse(
@@ -52,7 +73,7 @@ export async function renderProofOfRisk(runDir: string): Promise<string> {
   } catch {
     patch = null;
   }
-  const text = render(manifest, findings, reasoning, patch);
+  const text = render(manifest, findings, reasoning, patch, quoteChecker(manifest.target.path));
   await writeText(join(runDir, 'report.md'), text);
   await writeJson(join(runDir, 'manifest.json'), {
     ...manifest,
@@ -66,6 +87,7 @@ export function render(
   findings: readonly FindingT[],
   reasoning: ReasoningRecordT | null,
   patch: PatchRecordT | null = null,
+  quoteFound: QuoteChecker | null = null,
 ): string {
   const classes = reasoning?.classes ?? topClasses(findings);
   const reasoned = findings.filter((f) => f.reasoning);
@@ -77,22 +99,23 @@ export function render(
   lines.push(`# Proof of risk: ${manifest.target.label}`);
   lines.push('');
   lines.push(
-    `Scanned ${manifest.target.url ?? manifest.target.path}${manifest.commit ? ` at commit ${manifest.commit.slice(0, 10)}` : ''} on ${manifest.createdAt.slice(0, 10)}.`,
+    `Scanned ${manifest.target.url ?? manifest.target.path} on ${manifest.createdAt.slice(0, 10)}${manifest.commit ? ` (version ${manifest.commit.slice(0, 7)})` : ''}.`,
   );
   lines.push('');
   lines.push('## The short version');
   lines.push('');
   if (reasoning && !reasoning.dryRun && reasoned.length > 0) {
     lines.push(
-      `The scanner flagged ${findings.length} places. A reasoning model looked closely at ${reasoned.length} of them in the ${classes.length} classes that matter most. ${confirmed.length} ${confirmed.length === 1 ? 'is' : 'are'} confirmed or likely exploitable. Each one below comes with the lines of code that prove it and the smallest fix.`,
+      `The scanner flagged ${findings.length} places. A reasoning model looked closely at ${reasoned.length} of them in the ${classes.length} kinds of problem that matter most. ${confirmed.length} ${confirmed.length === 1 ? 'is' : 'are'} confirmed or likely exploitable. Each one below comes with the lines of code that prove it and the smallest fix.`,
     );
   } else {
     lines.push(
-      `The scanner flagged ${findings.length} places across ${Object.keys(manifest.counts.byClass).length} classes. The ${classes.length} classes below matter most. The reasoning stage has not run on this scan yet, so each item shows what the rule found and the standard fix. Run the reasoning stage to get exploitability verdicts with proof.`,
+      `This is a first pass. The scanner flagged ${findings.length} places across ${Object.keys(manifest.counts.byClass).length} kinds of problem. The ${classes.length} kinds below matter most. Nothing here has been checked yet for whether an attacker can really use it. To get a risk rating and proof for each item, run: \`node src/cli.ts reason runs/${manifest.runId}\`.`,
     );
   }
   lines.push('');
-  lines.push('| Class | Findings | Confirmed or likely | What it means |');
+  fixFirst(lines, classes, findings);
+  lines.push('| Problem | Places | How sure we are | What it means |');
   lines.push('|---|---|---|---|');
   for (const id of classes) {
     const cls = vulnClass(id as never);
@@ -101,9 +124,8 @@ export function render(
       (f) =>
         f.reasoning?.exploitability === 'confirmed' || f.reasoning?.exploitability === 'likely',
     ).length;
-    lines.push(
-      `| ${cls.name} | ${inClass.length} | ${reasoned.length ? hot : 'not judged'} | ${cls.plain} |`,
-    );
+    const sure = reasoned.length ? `${hot} confirmed or likely` : 'not checked yet';
+    lines.push(`| ${PLAIN_LABELS[id] ?? cls.name} | ${inClass.length} | ${sure} | ${cls.plain} |`);
   }
   lines.push('');
 
@@ -111,76 +133,15 @@ export function render(
     const cls = vulnClass(id as never);
     const inClass = findings.filter((f) => f.vulnClass === id).sort((a, b) => rank(a) - rank(b));
     if (inClass.length === 0) continue;
-    lines.push(`## ${cls.name}`);
+    lines.push(`## ${PLAIN_LABELS[id] ?? cls.name}`);
     lines.push('');
-    lines.push(cls.plain);
+    lines.push(`${cls.plain} (${cls.name})`);
     lines.push('');
-    const shown = inClass.slice(0, 5);
-    for (const f of shown) {
-      lines.push(`### ${f.file}${f.line ? `, line ${f.line}` : ''}`);
-      lines.push('');
-      const r = f.reasoning;
-      if (r) {
-        lines.push(
-          `**Verdict:** ${VERDICT_WORDS[r.exploitability] ?? r.exploitability} Confidence ${Math.round(r.confidence * 100)}%.`,
-        );
-        lines.push('');
-        lines.push(
-          `**Who can do this:** ${POSITION_WORDS[r.attackerPosition] ?? r.attackerPosition}.`,
-        );
-        lines.push('');
-        lines.push(`**What could happen:** ${r.plainLanguage}`);
-        lines.push('');
-        if (r.attackPath.length) {
-          lines.push('**How it happens:**');
-          lines.push('');
-          for (const [i, step] of r.attackPath.entries()) lines.push(`${i + 1}. ${step}`);
-          lines.push('');
-        }
-        if (r.preconditions.length) {
-          lines.push(`**Only if:** ${r.preconditions.join('; ')}`);
-          lines.push('');
-        }
-        if (r.evidence.length) {
-          lines.push('**The proof, in the code:**');
-          lines.push('');
-          for (const e of r.evidence.slice(0, 4)) {
-            lines.push(`- \`${e.file}${e.line ? `:${e.line}` : ''}\``);
-            lines.push('');
-            lines.push('  ```');
-            for (const l of e.quote.split('\n').slice(0, 2)) lines.push(`  ${l}`);
-            lines.push('  ```');
-          }
-          lines.push('');
-        }
-        lines.push(`**Blast radius:** ${r.blastRadius.replace(/-/g, ' ')}.`);
-        lines.push('');
-        lines.push(`**Smallest fix:** ${r.fixSummary}`);
-        lines.push('');
-      } else {
-        lines.push(`**What the rule found:** ${f.message}`);
-        lines.push('');
-        if (f.evidence) {
-          lines.push('```');
-          lines.push(f.evidence.split('\n')[0] ?? '');
-          lines.push('```');
-          lines.push('');
-        }
-        if (f.triage && !f.triage.keep) {
-          lines.push(`**Triage:** set aside as ${f.triage.category}. ${f.triage.reason}`);
-          lines.push('');
-        } else {
-          lines.push(`**Standard fix:** ${f.fix || 'See the rule documentation.'}`);
-          lines.push('');
-          lines.push('_Not judged by the reasoning stage on this scan._');
-          lines.push('');
-        }
-      }
-    }
-    if (inClass.length > shown.length) {
-      lines.push(
-        `${inClass.length - shown.length} more in this class are listed in findings.json.`,
-      );
+    const unique = dedupeLocations(inClass);
+    const shown = unique.slice(0, 5);
+    for (const f of shown) renderFinding(lines, f, quoteFound);
+    if (unique.length > shown.length) {
+      lines.push(`${unique.length - shown.length} more of this kind are listed in findings.json.`);
       lines.push('');
     }
   }
@@ -190,15 +151,20 @@ export function render(
     lines.push('');
     const who = patch.backend === 'muse-code' ? 'Muse Code' : 'Muse Spark';
     const testsWord = patch.tests.ran ? (patch.tests.passed ? 'passed' : 'failed') : 'not run';
+    const result = patch.green
+      ? 'green'
+      : patch.rescanClean
+        ? 're-scan clean, but not green because the tests did not run or did not pass'
+        : 'not green';
     lines.push(
-      `${who} patched ${patch.selected.length} findings on branch \`${patch.branch}\`. The scan ran again on the patched code: ${patch.rescan.resolved.length} resolved, ${patch.rescan.remaining.length} still reported, ${patch.rescan.introduced} new. Project tests: ${testsWord}${patch.tests.ran ? ` (${patch.tests.runner})` : ''}. Result: ${patch.green ? 'green' : 'not green'}.`,
+      `${who} patched ${patch.selected.length} findings on branch \`${patch.branch}\`. The scan ran again on the patched code: ${patch.rescan.resolved.length} fixed, ${patch.rescan.remaining.length} still reported, ${patch.rescan.introduced} new. Project tests: ${testsWord}${patch.tests.ran ? ` (${patch.tests.runner})` : ''}. Result: ${result}.`,
     );
     lines.push('');
-    lines.push('| Class | Before | After |');
+    lines.push('| Problem | Patched | Still reported |');
     lines.push('|---|---|---|');
     for (const [cls, before] of Object.entries(patch.rescan.before.byClass)) {
       lines.push(
-        `| ${vulnClass(cls as never).name} | ${before} | ${patch.rescan.after.byClass[cls] ?? 0} |`,
+        `| ${PLAIN_LABELS[cls] ?? vulnClass(cls as never).name} | ${before} | ${patch.rescan.after.byClass[cls] ?? 0} |`,
       );
     }
     lines.push('');
@@ -209,23 +175,142 @@ export function render(
   lines.push('## How this report was made');
   lines.push('');
   lines.push(
-    `- Deterministic scan: ${manifest.engine.name} ${manifest.engine.version}, ${manifest.engine.rulesRun} rules, ${manifest.filesScanned} files.`,
+    `- An automated scan with ${manifest.engine.rulesRun} checks over ${manifest.filesScanned} files (${manifest.engine.name} ${manifest.engine.version}).`,
   );
   if (reasoning && !reasoning.dryRun) {
     lines.push(
       `- Reasoning: ${reasoning.models.reason ?? 'none'} judged ${reasoned.length} findings${reasoning.models.triage ? ` after ${reasoning.models.triage} triage` : ''}. ${reasoning.calls} model calls, $${reasoning.usd.toFixed(2)}.`,
     );
     const capped = reasoning.decisions.filter((d) => d.outcome === 'budget-exhausted').length;
-    if (capped)
-      lines.push(
-        `- ${capped} findings hit the reasoning budget and keep their deterministic result.`,
-      );
+    if (capped) {
+      lines.push(`- ${capped} findings hit the reasoning budget and keep their first-pass result.`);
+    }
   }
   lines.push(
     '- Secrets in the scanned code were masked before any of it was read by a model or written here.',
   );
   lines.push('');
   return lines.join('\n');
+}
+
+function renderFinding(lines: string[], f: FindingT, quoteFound: QuoteChecker | null): void {
+  lines.push(`### ${f.file}${f.line ? `, line ${f.line}` : ''}`);
+  lines.push('');
+  const r = f.reasoning;
+  if (!r) {
+    lines.push(`**What the rule found:** ${f.message}`);
+    lines.push('');
+    if (f.vulnClass === 'secrets') {
+      lines.push('(The secret itself is hidden in this report for safety.)');
+      lines.push('');
+    } else if (f.evidence) {
+      lines.push('```');
+      lines.push(f.evidence.split('\n')[0] ?? '');
+      lines.push('```');
+      lines.push('');
+    }
+    if (f.triage && !f.triage.keep) {
+      lines.push(`**Set aside:** ${f.triage.category}. ${f.triage.reason}`);
+    } else {
+      lines.push(`**Standard fix:** ${f.fix || 'See the rule documentation.'}`);
+      lines.push('');
+      lines.push('_Not checked for exploitability on this scan._');
+    }
+    lines.push('');
+    return;
+  }
+  lines.push(
+    `**Verdict:** ${VERDICT_WORDS[r.exploitability] ?? r.exploitability} Confidence ${Math.round(r.confidence * 100)}%.`,
+  );
+  lines.push('');
+  lines.push(`**Who can do this:** ${POSITION_WORDS[r.attackerPosition] ?? r.attackerPosition}.`);
+  lines.push('');
+  lines.push(`**What could happen:** ${r.plainLanguage}`);
+  lines.push('');
+  if (r.attackPath.length) {
+    lines.push('**How it happens:**');
+    lines.push('');
+    for (const [i, step] of r.attackPath.entries()) lines.push(`${i + 1}. ${step}`);
+    lines.push('');
+  }
+  if (r.preconditions.length) {
+    lines.push(`**Only if:** ${r.preconditions.join('; ')}`);
+    lines.push('');
+  }
+  if (r.evidence.length) {
+    lines.push('**The proof, in the code:**');
+    lines.push('');
+    for (const e of r.evidence.slice(0, 4)) {
+      const verified = quoteFound ? quoteFound(e.file, e.quote) : null;
+      const flag =
+        verified === false
+          ? ' (this quote was not found in the file; treat it as a paraphrase)'
+          : '';
+      lines.push(`- \`${e.file}${e.line ? `:${e.line}` : ''}\`${flag}`);
+      lines.push('');
+      lines.push('  ```');
+      for (const l of e.quote.split('\n').slice(0, 2)) lines.push(`  ${l}`);
+      lines.push('  ```');
+    }
+    lines.push('');
+  }
+  lines.push(`**Blast radius:** ${r.blastRadius.replace(/-/g, ' ')}.`);
+  lines.push('');
+  lines.push(`**Smallest fix:** ${r.fixSummary}`);
+  lines.push('');
+}
+
+/** The two kinds to fix first: most criticals, then most findings. */
+function fixFirst(
+  lines: string[],
+  classes: readonly string[],
+  findings: readonly FindingT[],
+): void {
+  const ranked = classes
+    .map((id) => ({
+      id,
+      critical: findings.filter((f) => f.vulnClass === id && f.severity === 'critical').length,
+      total: findings.filter((f) => f.vulnClass === id).length,
+    }))
+    .filter((c) => c.total > 0)
+    .sort((a, b) => b.critical - a.critical || b.total - a.total)
+    .slice(0, 2);
+  if (ranked.length === 0) return;
+  const names = ranked.map((c) =>
+    (PLAIN_LABELS[c.id] ?? vulnClass(c.id as never).name).toLowerCase(),
+  );
+  lines.push(`**Fix first:** ${names.join(', then ')}.`);
+  lines.push('');
+}
+
+/** Several rules often flag one line. Show the location once, led by the finding with a verdict. */
+function dedupeLocations(findings: readonly FindingT[]): FindingT[] {
+  const seen = new Map<string, FindingT>();
+  for (const f of findings) {
+    const key = `${f.file}:${f.line ?? 0}`;
+    const existing = seen.get(key);
+    if (!existing || (!existing.reasoning && f.reasoning)) seen.set(key, f);
+  }
+  return [...seen.values()];
+}
+
+/** Checks a quoted line against the real file, whitespace-insensitive, so a made-up quote is flagged. */
+export function quoteChecker(repoDir: string): QuoteChecker {
+  const cache = new Map<string, string | null>();
+  return (file, quote) => {
+    const key = file.replace(/\\/g, '/');
+    if (!cache.has(key)) {
+      try {
+        cache.set(key, readFileSync(join(repoDir, key), 'utf8').replace(/\s+/g, ''));
+      } catch {
+        cache.set(key, null);
+      }
+    }
+    const content = cache.get(key);
+    if (content === null || content === undefined) return false;
+    const needle = quote.replace(/\s+/g, '');
+    return needle.length > 0 && content.includes(needle);
+  };
 }
 
 function rank(f: FindingT): number {

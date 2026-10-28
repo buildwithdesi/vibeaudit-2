@@ -31,6 +31,7 @@ export interface StructuredRequest<T> {
   schema: z.ZodType<T>;
   schemaName: string;
   reasoningEffort?: ReasoningEffort;
+  /** Cap on completion tokens. Reasoning tokens count against it, so leave real headroom. */
   maxOutputTokens: number;
 }
 
@@ -46,11 +47,19 @@ export class ModelApiError extends Error {
   override name = 'ModelApiError';
   readonly status: number;
   readonly retryable: boolean;
-  constructor(message: string, status: number, retryable: boolean) {
+  /** Billed usage when the call reached the model but the answer was unusable. */
+  readonly usage: Usage | null;
+  constructor(message: string, status: number, retryable: boolean, usage: Usage | null = null) {
     super(message);
     this.status = status;
     this.retryable = retryable;
+    this.usage = usage;
   }
+}
+
+/** Auth or billing failures that will fail every later call the same way. */
+export function isFatalStatus(status: number): boolean {
+  return status === 401 || status === 402 || status === 403;
 }
 
 export function clientFromEnv(prefix: 'META' | 'TRIAGE', env = process.env): ClientConfig | null {
@@ -61,6 +70,12 @@ export function clientFromEnv(prefix: 'META' | 'TRIAGE', env = process.env): Cli
     env[prefix === 'META' ? 'META_REASON_MODEL' : 'TRIAGE_MODEL'] ??
     (prefix === 'META' ? 'muse-spark-1.3' : undefined);
   if (!apiKey || !baseUrl || !model) return null;
+  if (!/^https:\/\//i.test(baseUrl)) throw new Error(`${prefix}_BASE_URL must start with https://`);
+  if (/-contributor$/i.test(model)) {
+    throw new Error(
+      `${model} is a Contributor-tier model. Meta uses that tier to improve its products, so it is not allowed for scanned code.`,
+    );
+  }
   return { baseUrl, apiKey, model };
 }
 
@@ -70,6 +85,7 @@ export async function completeStructured<T>(
 ): Promise<StructuredResult<T>> {
   const fetchImpl = config.fetchImpl ?? fetch;
   const maxRetries = config.maxRetries ?? 3;
+  const url = `${config.baseUrl.replace(/\/$/, '')}/chat/completions`;
   const body: Record<string, unknown> = {
     model: config.model,
     messages: request.messages,
@@ -84,69 +100,106 @@ export async function completeStructured<T>(
     attempt += 1;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), config.timeoutMs ?? 180_000);
-    let response: Response;
     try {
-      const url = `${config.baseUrl.replace(/\/$/, '')}/chat/completions`;
-      // biome-ignore format: the trailing marker must stay on the await line for the v1 engine
-      response = await fetchImpl(url, { // vibe-audit-ignore perf-no-await-parallel
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${config.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-    } catch (error) {
+      const response = await sendOnce(fetchImpl, url, config.apiKey, body, controller.signal); // vibe-audit-ignore perf-no-await-parallel
+      if (response === null) {
+        if (attempt <= maxRetries) {
+          await sleep(backoffMs(attempt, null)); // vibe-audit-ignore perf-no-await-parallel
+          continue;
+        }
+        throw new ModelApiError('request failed after retries', 0, true);
+      }
+
+      if (!response.ok) {
+        const text = (await response.text().catch(() => '')).slice(0, 500); // vibe-audit-ignore perf-no-await-parallel
+        const retryable = response.status === 429 || response.status >= 500;
+        if (retryable && attempt <= maxRetries) {
+          await sleep(backoffMs(attempt, response.headers.get('retry-after'))); // vibe-audit-ignore perf-no-await-parallel
+          continue;
+        }
+        // 400 schema problems, 401 bad key, 402 billing: never retry, surface clearly.
+        throw new ModelApiError(
+          `${config.model} returned ${response.status}: ${text}`,
+          response.status,
+          retryable,
+        );
+      }
+
+      return await readAnswer(response, config.model, request.schema); // vibe-audit-ignore perf-no-await-parallel
+    } finally {
       clearTimeout(timer);
-      if (attempt <= maxRetries) {
-        await sleep(backoffMs(attempt, null)); // vibe-audit-ignore perf-no-await-parallel
-        continue;
-      }
-      throw new ModelApiError(`request failed: ${(error as Error).message}`, 0, true);
     }
-    clearTimeout(timer);
-
-    if (!response.ok) {
-      const text = (await response.text()).slice(0, 500); // vibe-audit-ignore perf-no-await-parallel
-      const retryable = response.status === 429 || response.status >= 500;
-      if (retryable && attempt <= maxRetries) {
-        await sleep(backoffMs(attempt, response.headers.get('retry-after'))); // vibe-audit-ignore perf-no-await-parallel
-        continue;
-      }
-      // 400 schema problems, 401 bad key, 402 billing: never retry, surface clearly.
-      throw new ModelApiError(
-        `${config.model} returned ${response.status}: ${text}`,
-        response.status,
-        retryable,
-      );
-    }
-
-    const json = (await response.json()) as ChatCompletion; // vibe-audit-ignore perf-no-await-parallel
-    const choice = json.choices?.[0];
-    const content = choice?.message?.content;
-    if (!choice || typeof content !== 'string' || choice.finish_reason !== 'stop') {
-      throw new ModelApiError(
-        `${config.model} did not finish a complete answer (finish_reason=${choice?.finish_reason ?? 'none'})`,
-        200,
-        false,
-      );
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(content);
-    } catch {
-      throw new ModelApiError(`${config.model} returned text that is not JSON`, 200, false);
-    }
-    const data = request.schema.parse(parsed);
-    return {
-      data,
-      usage: readUsage(json.usage),
-      model: json.model ?? config.model,
-      finishReason: choice.finish_reason,
-      requestId: response.headers.get('x-request-id'),
-    };
   }
+}
+
+/** One HTTP attempt. Returns null on a network-level failure so the caller can retry. */
+async function sendOnce(
+  fetchImpl: typeof fetch,
+  url: string,
+  apiKey: string,
+  body: Record<string, unknown>,
+  signal: AbortSignal,
+): Promise<Response | null> {
+  try {
+    return await fetchImpl(url, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal,
+    });
+  } catch {
+    return null;
+  }
+}
+
+async function readAnswer<T>(
+  response: Response,
+  model: string,
+  schema: z.ZodType<T>,
+): Promise<StructuredResult<T>> {
+  let json: ChatCompletion;
+  try {
+    json = (await response.json()) as ChatCompletion;
+  } catch (caught) {
+    throw new ModelApiError(
+      `${model} returned a body that is not JSON: ${(caught as Error).message}`,
+      200,
+      false,
+    );
+  }
+  const usage = readUsage(json.usage);
+  const choice = json.choices?.[0];
+  const content = choice?.message?.content;
+  if (!choice || typeof content !== 'string' || choice.finish_reason !== 'stop') {
+    throw new ModelApiError(
+      `${model} did not finish a complete answer (finish_reason=${choice?.finish_reason ?? 'none'})`,
+      200,
+      false,
+      usage,
+    );
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    throw new ModelApiError(`${model} returned text that is not JSON`, 200, false, usage);
+  }
+  const validated = schema.safeParse(parsed);
+  if (!validated.success) {
+    throw new ModelApiError(
+      `${model} answer did not match the schema: ${validated.error.message.slice(0, 300)}`,
+      200,
+      false,
+      usage,
+    );
+  }
+  return {
+    data: validated.data,
+    usage,
+    model: json.model ?? model,
+    finishReason: choice.finish_reason,
+    requestId: response.headers.get('x-request-id'),
+  };
 }
 
 interface ChatCompletion {
@@ -170,9 +223,14 @@ function readUsage(usage: ChatCompletion['usage']): Usage {
 }
 
 function backoffMs(attempt: number, retryAfter: string | null): number {
-  const header = retryAfter ? Number.parseFloat(retryAfter) : Number.NaN;
-  if (Number.isFinite(header) && header > 0) return Math.min(header * 1000, 60_000);
-  return Math.min(1000 * 2 ** (attempt - 1), 20_000);
+  if (retryAfter) {
+    const seconds = Number.parseFloat(retryAfter);
+    if (Number.isFinite(seconds) && seconds > 0) return Math.min(seconds * 1000, 60_000);
+    const date = Date.parse(retryAfter);
+    if (Number.isFinite(date)) return Math.min(Math.max(date - Date.now(), 1000), 60_000);
+  }
+  const base = Math.min(1000 * 2 ** (attempt - 1), 20_000);
+  return base + Math.floor(Math.random() * 500);
 }
 
 function sleep(ms: number): Promise<void> {

@@ -6,7 +6,7 @@ Builder: Desmond Baker, solo. Digital Alchemy / DB Creations LLC, Maywood, Illin
 
 ## The rule this repository follows
 
-Everything in this repository was written inside the hackathon window. Prior work is consumed as a pinned npm dependency and is never copied in. If a judge cannot tell whether something is new, it does not go in the demo.
+Everything in this repository was written inside the hackathon window, which opened October 26, 2026 at 12:00 PM ET. The files were drafted on October 26 and committed on October 27; the build log records both days. Prior work is consumed as a pinned npm dependency and is never copied in. If a judge cannot tell whether something is new, it does not go in the demo.
 
 ## Prior work (not part of this submission)
 
@@ -39,7 +39,7 @@ Status lines are updated as work lands. The build log in `docs/build-log.md` rec
 
 ## How a judge can verify what is new
 
-- `git log --format='%ad  %s' --date=iso` shows every commit inside the window. The first commit is the scaffold on October 27, 2026 (day one of building was spent on research and recon, logged in `docs/build-log.md`).
+- `git log --format='%ad  %s' --date=iso` shows every commit inside the window. The first commit is the scaffold on October 27, 2026; October 26 was research, recon and drafting, logged in `docs/build-log.md`. One commit is titled "correct the first-commit date" because an earlier draft of this file said October 26.
 - `npm ls @jackdog668/vibeaudit` shows the only prior-work code path. It is a pinned dependency, called as a child process from `src/engine/v1.ts`, never imported as source.
 - Every run writes `manifest.json` with the engine name, version and live rule count, so the boundary is visible in the output too.
 - `npx vibeaudit --list-rules` prints the engine's live rule list on your machine.

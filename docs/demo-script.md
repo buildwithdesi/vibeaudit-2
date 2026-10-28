@@ -29,7 +29,7 @@ node src/cli.ts scan https://github.com/buildwithdesi/vibeaudit-2-demo-app
 
 Voice: "Vibe Audit 2.0 takes a GitHub URL. It clones into a sandbox where nothing from the repo can run, then runs the v1 engine, which is prior work, as a black box. Every finding gets a vulnerability class and masked code context. Secrets are masked before anything is written to disk."
 
-Show: the run summary with the top five classes.
+Show: the run summary with the top five classes, then one finding in `findings.json` with its class and masked context. The raw rule output is v1; the class, the masked context and the manifest are new. Say so.
 
 ### Scene 3, reasoning with Muse Spark (0:50 to 1:35)
 
@@ -56,10 +56,10 @@ Show: the database injection section, scrolling slowly through verdict, attack p
 On screen: terminal.
 
 ```
-node src/cli.ts patch runs/<id> --run-tests
+node src/cli.ts patch runs/<id> --backend muse-code --run-tests
 ```
 
-Voice: "Then it fixes them. Muse Code patches on a sandbox branch, never on main. The scan runs again on the patched code, and the app's own tests run in a container. Green means two things: the findings are gone, and nothing broke."
+Voice: "Then it fixes them. Muse Spark proposes exact edits, or Muse Code does it as an agent, on a sandbox branch, never on main. The scan runs again on the patched code, and the app's own tests run in a container. Green means two things: the findings are gone, and the tests still pass."
 
 Show: the GREEN line, then `patch.diff` with the parameterized query and the execFile change side by side.
 
@@ -67,7 +67,7 @@ Show: the GREEN line, then `patch.diff` with the parameterized query and the exe
 
 On screen: the GitHub repo with CONTRIBUTIONS.md open.
 
-Voice: "Everything you saw was built in the ten days. The split from prior work is in CONTRIBUTIONS.md. Vibe Audit 2.0: find it, prove it, fix it, without breaking the app."
+Voice: "Everything you saw was built inside the hackathon window. The split from prior work is in CONTRIBUTIONS.md. Vibe Audit 2.0: find it, prove it, fix it, without breaking the app."
 
 ## What must be true before recording
 

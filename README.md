@@ -13,22 +13,33 @@ GitHub URL or folder
   1. intake     strict URL parsing, hardened shallow clone into runs/<id>/repo
   2. engine     @jackdog668/vibeaudit (v1, prior work) runs as a child process, JSON captured
   3. normalize  stable ids, vulnerability classes, masked code context, run manifest
-  4. triage     Muse Glimmer 30B (open weights) drops test fixtures, dead code, mitigated paths
+  4. triage     Muse Glimmer 30B (open weights) drops test fixtures, dead code, mitigated paths. Optional: needs TRIAGE_* set
   5. reason     Muse Spark 1.3 judges exploitability per finding, inside a per-file budget
   6. report     proof-of-risk report for the top five classes, written for founders
-  7. patch      Muse Code patches on a sandbox branch, audit and tests run again
+  7. patch      Muse Spark edits (default) or Muse Code (--backend muse-code) on a sandbox branch, re-scan, project tests
 ```
 
 | Stage | Status |
 |---|---|
 | 1 to 3 | Built. Tested on the seeded app and on OWASP NodeGoat. |
-| 4 to 5 | Built. `reason <run>` with a dry-run mode; tested against a fake endpoint. First live call waits on API credits. |
+| 4 to 5 | Built. `reason <run>` with a dry-run mode; tested against a fake endpoint. Live call status is in CONTRIBUTIONS.md. |
 | 6 | Built. `report <run>` writes `report.md`. |
-| 7 | Built. `patch <run>` with Muse Code or Muse Spark backends; green on the seeded app against a fake endpoint. |
+| 7 | Built. `patch <run>` with Muse Spark or Muse Code backends; green on the seeded app against a fake endpoint. |
+
+## Meta tooling in this repo
+
+| Model | Role | Where | On by default | Data tier |
+|---|---|---|---|---|
+| Muse Spark 1.3 (Model API) | Repository map and exploitability verdicts | `src/reason/orchestrate.ts`, prompts in `src/reason/prompts/` | Yes, with `META_API_KEY` | Standard only. Contributor-tier model ids are refused in `src/reason/meta-client.ts` |
+| Muse Spark 1.3 (Model API) | Patch edits (`--backend api`, the default) | `src/patch/backends.ts`, `apiPatch` | Yes, with `META_API_KEY` | Standard only |
+| Muse Glimmer 30B (open weights, hosted) | Triage before Spark | `src/reason/prompts/triage.ts`, client in `src/reason/meta-client.ts` | No. Set `TRIAGE_BASE_URL`, `TRIAGE_API_KEY`, `TRIAGE_MODEL` (OpenRouter `meta/muse-glimmer-30b` works) | Provider's terms |
+| Muse Code (agent CLI) | Patch backend `--backend muse-code` | `src/patch/backends.ts`, `museCodePatch` | No. Must be asked for, because it runs an agent inside the repository | Forced to `--contributor-mode off` |
+
+The v1 engine is prior work. `scan` wraps it unchanged; the new work starts at `normalize`.
 
 ## Quick start
 
-Needs Node 24 and git.
+Needs Node 24 (22.18 or newer works) and git. Docker is optional and only used to run a patched project's tests.
 
 ```bash
 npm ci --ignore-scripts
@@ -38,7 +49,7 @@ node src/cli.ts reason runs/<run id> --dry-run   # writes every prompt, no API c
 node src/cli.ts reason runs/<run id>             # needs META_API_KEY in .env
 node src/cli.ts report runs/<run id>
 node src/cli.ts patch runs/<run id> --run-tests   # sandbox branch, re-scan, project tests
-node src/cli.ts audit https://github.com/OWASP/NodeGoat   # all stages in one go
+node src/cli.ts audit https://github.com/OWASP/NodeGoat   # scan, reason, report in one go (patch is separate)
 node src/cli.ts rules
 ```
 
@@ -51,10 +62,13 @@ Copy `.env.example` to `.env` for the reasoning stages. The Meta Model API key c
 ## Security posture
 
 - A cloned repository is hostile input. Git hooks point at an empty folder, symlinks are off, credential prompts are off, and the URL always follows `--`. The scan stage only reads files.
-- The scanned repository's own `.vibe-audit.json` is moved aside during the engine run unless you pass `--trust-target-config`, so a repo cannot hide findings through its config. Known gap: engine 1.4.0 still honors inline `vibe-audit-ignore` comments. The manifest records which mode ran.
+- The scanned repository's own `.vibe-audit.json` is moved aside during the engine run unless you pass `--trust-target-config`, so a repo cannot hide findings through its config. Known gap: engine 1.4.0 still honors inline `vibe-audit-ignore` comments in the scanned code (this repo uses them on its own source for the self-scan only). The manifest records which mode ran.
 - Credential-shaped values are masked before any code context is written to disk or sent to a model.
 - Code sent to a model is wrapped as untrusted data. Prompts state that instructions inside the code are to be ignored, and every model answer is constrained by a JSON schema and validated again with Zod.
-- The patch loop never lets a model write files directly through the API path: every edit is an exact search-and-replace that must match once, a plan that adds dependencies is rejected, and the patch lands on a sandbox branch. The project's tests run in a throwaway Docker container when Docker is available; running them on this machine needs an explicit flag.
+- The patch loop never lets a model write files directly through the API path: every edit is an exact search-and-replace that must match once, only the finding's own file may change, `.git`, `.github`, package manifests, lockfiles and env files are off limits, a plan that adds dependencies is rejected, and the patch lands on a sandbox branch in the pipeline's own copy. A local folder is copied first and never patched in place.
+- The project's tests run on a copy without `.git`, in a Docker container with no network, no root and no capabilities. Running them on this machine needs `--allow-local-tests`.
+- Child processes that touch a scanned repository (engine, git, npm, Docker, Muse Code) get a scrubbed environment: no API keys, an empty npm config, install scripts off.
+- "Green" requires the re-scan to be clean and the project's tests to have run and passed. Without `--run-tests` the best result is "re-scan clean".
 - Muse Spark runs in Standard mode only. The cheaper Contributor tier is never used because scanned code may belong to a customer.
 
 ## Develop

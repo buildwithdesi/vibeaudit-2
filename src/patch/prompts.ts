@@ -1,6 +1,6 @@
 import type { FindingT } from '../model/finding.ts';
 import type { ChatMessage } from '../reason/meta-client.ts';
-import { clip, repoData, UNTRUSTED_RULE } from '../reason/prompts/shared.ts';
+import { clip, inline, repoData, UNTRUSTED_RULE } from '../reason/prompts/shared.ts';
 
 /**
  * The patch prompt asks for the smallest change that closes the path the
@@ -32,12 +32,14 @@ export function buildPatchMessages(input: PatchPromptInput): ChatMessage[] {
   const related = input.relatedFiles.map((x) => repoData(x.file, clip(x.code, 3_000))).join('\n\n');
   const user = [
     `Finding ${f.id}: ${f.ruleId} (${f.ruleName}), class ${f.vulnClass}, severity ${f.severity}`,
-    `Location: ${f.file}${f.line ? `:${f.line}` : ''}`,
-    `What the rule says: ${clip(f.message, 400)}`,
+    `Location: ${inline(f.file)}${f.line ? `:${f.line}` : ''}`,
+    `What the rule says: ${inline(f.message, 400)}`,
     r
-      ? `Exploitability verdict: ${r.exploitability}. Attack path: ${r.attackPath.join(' -> ')}`
+      ? `Exploitability verdict: ${r.exploitability}. Attack path (from an earlier automated pass):\n${repoData('attack-path', clip(r.attackPath.join(' -> '), 800))}`
       : '',
-    r ? `Suggested smallest fix: ${clip(r.fixSummary, 400)}` : `Standard fix: ${clip(f.fix, 400)}`,
+    r
+      ? `Suggested smallest fix (from an earlier automated pass):\n${repoData('fix-summary', clip(r.fixSummary, 400))}`
+      : `Standard fix:\n${repoData('standard-fix', clip(f.fix, 400))}`,
     '',
     `Full file ${f.file}:`,
     repoData(f.file, clip(input.fileContent, 24_000)),
@@ -58,9 +60,9 @@ export function buildMuseCodePrompt(findings: readonly FindingT[]): string {
   const items = findings.map((f) => {
     const r = f.reasoning;
     return [
-      `- ${f.file}${f.line ? `:${f.line}` : ''} [${f.ruleId}] ${clip(f.message, 200)}`,
-      r ? `  attack path: ${r.attackPath.join(' -> ')}` : '',
-      `  fix: ${clip(r?.fixSummary ?? f.fix, 300)}`,
+      `- ${inline(f.file)}${f.line ? `:${f.line}` : ''} [${f.ruleId}] ${inline(f.message, 200)}`,
+      r ? `  attack path: ${inline(r.attackPath.join(' -> '), 600)}` : '',
+      `  fix: ${inline(r?.fixSummary ?? f.fix, 300)}`,
     ]
       .filter(Boolean)
       .join('\n');

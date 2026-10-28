@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { cpSync, existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -36,7 +36,7 @@ function fakePatcher(log: string[]): ClientConfig {
             file: 'routes/users.js',
             search: SQL_BEFORE,
             replace:
-              "const rows = await db.query('SELECT * FROM users WHERE id = $1', [req.params.id]);",
+              "// Bound as a parameter so the id can never rewrite the query.\nconst rows = await db.query('SELECT * FROM users WHERE id = $1', [req.params.id]);",
             why: 'parameterized query',
           },
         ],
@@ -84,37 +84,84 @@ function fakePatcher(log: string[]): ClientConfig {
   return { baseUrl: 'https://fake.local/v1', apiKey: 'k', model: 'muse-spark-1.3', fetchImpl };
 }
 
-test('edits apply only when the search text is unique and inside the repo', async () => {
+test('edits apply only on the allowlist, atomically per file, matching the file line endings', async () => {
   const dir = freshCopy();
-  const results = await applyEdits(dir, [
-    {
-      file: 'routes/files.js',
-      search: 'req.query.file',
-      replace: 'path.basename(String(req.query.file))',
-      why: 'strip directories',
-    },
-    {
-      file: 'routes/files.js',
-      search: 'Router',
-      replace: 'X',
-      why: 'appears twice, must be rejected',
-    },
-    { file: '../outside.js', search: 'a', replace: 'b', why: 'escapes repo' },
-    { file: 'routes/files.js', search: 'not in the file at all', replace: 'x', why: 'missing' },
-  ]);
-  assert.deepEqual(
-    results.map((r) => r.reason),
+  const results = await applyEdits(
+    dir,
     [
-      'applied',
-      'search text appears more than once',
-      'path escapes the repository',
-      'search text not found',
+      {
+        file: 'routes/files.js',
+        search: 'req.query.file',
+        replace: 'path.basename(String(req.query.file))',
+        why: 'strip directories',
+      },
+      {
+        file: 'routes/files.js',
+        search: 'Router',
+        replace: 'X',
+        why: 'appears twice, must be rejected',
+      },
+      { file: '../outside.js', search: 'a', replace: 'b', why: 'escapes repo' },
+      { file: 'routes/users.js', search: 'Router', replace: 'X', why: 'not on the allowlist' },
+      {
+        file: '.git/config',
+        search: '[core]',
+        replace: '[core]\n\tfsmonitor = evil',
+        why: 'git config',
+      },
+      {
+        file: 'package.json',
+        search: '"test"',
+        replace: '"test": "true", "x"',
+        why: 'test script',
+      },
+      {
+        file: 'routes/preview.js',
+        search: 'fetch(',
+        replace: '// vibe-audit-ignore ssrf-vulnerability\n  fetch(',
+        why: 'suppress',
+      },
     ],
+    { allowedFiles: ['routes/files.js', 'routes/preview.js'] },
   );
+  const reasons = results.map((r) => r.reason);
+  // The two routes/files.js edits are one atomic unit: the duplicate search rejects both.
+  assert.ok(reasons[0]?.startsWith('not applied: another edit for this file failed'), reasons[0]);
+  assert.equal(reasons[1], 'search text appears more than once');
+  assert.equal(reasons[2], 'path is not a plain relative path');
+  assert.equal(reasons[3], 'file is not on the allowlist for this finding');
+  assert.equal(reasons[4], 'path touches the .git directory');
+  assert.equal(reasons[5], 'package.json may not be patched');
+  assert.equal(reasons[6], 'replacement would suppress the scanner instead of fixing the code');
   assert.ok(
-    readFileSync(join(dir, 'routes/files.js'), 'utf8').includes(
-      'path.basename(String(req.query.file))',
-    ),
+    !readFileSync(join(dir, 'routes/files.js'), 'utf8').includes('path.basename'),
+    'nothing written',
+  );
+
+  // A CRLF file accepts a multi-line LF search and keeps CRLF.
+  const crlf = join(dir, 'routes/network.js');
+  writeFileSync(crlf, readFileSync(crlf, 'utf8').replace(/\r?\n/g, '\r\n'));
+  const multi = await applyEdits(
+    dir,
+    [
+      {
+        file: 'routes/network.js',
+        search: "import { exec } from 'node:child_process';\nimport { Router } from 'express';",
+        replace:
+          "import { execFile } from 'node:child_process';\nimport { Router } from 'express';",
+        why: 'multi-line on crlf',
+      },
+    ],
+    { allowedFiles: ['routes/network.js'] },
+  );
+  assert.deepEqual(
+    multi.map((r) => r.reason),
+    ['applied'],
+  );
+  const after = readFileSync(crlf, 'utf8');
+  assert.ok(
+    after.includes("import { execFile } from 'node:child_process';\r\n"),
+    'edit landed and CRLF kept',
   );
 });
 
@@ -138,11 +185,13 @@ test('patch loop: branch, exact edits, re-scan shows findings gone, project test
     runTests: true,
     useDocker: false,
     allowLocalTests: true,
+    budgetUsd: 5,
     dryRun: false,
   });
 
   assert.equal(record.backend, 'api');
   assert.ok(record.branch?.startsWith('vibeaudit2/patch-'));
+  assert.equal(record.error, null);
   assert.ok(record.patchCommit, 'patch committed on the sandbox branch');
   assert.ok(existsSync(join(scan.runDir, 'patch.diff')));
   assert.ok(existsSync(join(scan.runDir, 'findings.after.json')));
@@ -156,9 +205,15 @@ test('patch loop: branch, exact edits, re-scan shows findings gone, project test
   // The template-literal SQL on line 9 and the exec on line 9 are gone; the
   // concatenated DELETE on line 15 was not selected (the fake has no fix for it).
   assert.ok(record.rescan.resolved.length >= 2, `resolved ${record.rescan.resolved.length}`);
+  assert.equal(record.rescan.introduced, 0, 'a line-shifting edit must not count survivors as new');
   assert.ok(record.tests.ran && record.tests.passed, `tests: ${record.tests.outputTail}`);
   assert.equal(record.tests.runner, 'local');
-  assert.equal(typeof record.green, 'boolean');
+  assert.equal(record.rescanClean, record.rescan.remaining.length === 0);
+  assert.ok(record.workDir?.endsWith('repo'), 'patched the copy, not the source folder');
+  assert.ok(
+    !readFileSync(join(app, 'routes/users.js'), 'utf8').includes('$1'),
+    'source folder untouched',
+  );
   assert.ok(record.usd > 0);
 
   const manifest = JSON.parse(readFileSync(join(scan.runDir, 'manifest.json'), 'utf8')) as {
@@ -187,6 +242,7 @@ test('dry run plans without touching the tree', async () => {
     runTests: false,
     useDocker: false,
     allowLocalTests: false,
+    budgetUsd: 5,
     dryRun: true,
   });
   assert.equal(record.patchCommit, null);

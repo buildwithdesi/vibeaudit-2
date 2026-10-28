@@ -1,27 +1,40 @@
+import { cpSync, existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { z } from 'zod';
 import { runEngineScan } from '../engine/v1.ts';
 import { Finding, type FindingT, RunManifest } from '../model/finding.ts';
 import { countBy, normalizeFindings } from '../normalize/index.ts';
-import { rateFor } from '../reason/budget.ts';
+import { ReasoningBudget, rateFor } from '../reason/budget.ts';
 import type { ClientConfig } from '../reason/meta-client.ts';
 import { topClasses } from '../report/summary.ts';
 import { writeJson, writeText } from '../util/fs.ts';
 import { info, warn } from '../util/log.ts';
 import { apiPatch, museAvailable, museCodePatch, type PatchOutcome } from './backends.ts';
-import { commitAll, createBranch, diffAgainst, ensureRepo, git } from './git.ts';
+import { compareScans, parseUnifiedDiff } from './compare.ts';
+import { forbiddenPathReason } from './edits.ts';
+import {
+  changedFiles,
+  checkout,
+  commitAll,
+  createBranch,
+  diffAgainst,
+  ensureRepo,
+  git,
+} from './git.ts';
 import { runProjectTests, type TestRunResult } from './project-tests.ts';
 
 /**
  * Stage 7: the patch loop.
  *
- *   select findings -> sandbox branch -> patch -> commit -> re-scan -> tests
+ *   select findings -> pipeline's own copy -> sandbox branch -> patch ->
+ *   commit -> re-scan -> project tests
  *
- * "Green" means two things at once: the re-scan no longer reports the
- * patched findings, and the project's own tests still pass. Both results
- * are written to patch.json next to the diff, so the before and after can be
- * shown side by side.
+ * The user's checkout is never touched: a GitHub target is already the
+ * pipeline's clone, and a local folder is copied into the run folder first.
+ * "Green" means the re-scan no longer reports the patched findings, nothing
+ * new appeared, and the project's own tests ran and passed. Without tests
+ * the result is at best "re-scan clean", never green.
  */
 export interface PatchOptions {
   backend: 'auto' | 'api' | 'muse-code';
@@ -32,6 +45,7 @@ export interface PatchOptions {
   runTests: boolean;
   useDocker: boolean;
   allowLocalTests: boolean;
+  budgetUsd: number;
   /** Plan only: no edits, no branch, no tests. */
   dryRun: boolean;
 }
@@ -41,6 +55,7 @@ export const PatchRecord = z.object({
   startedAt: z.string(),
   finishedAt: z.string(),
   backend: z.enum(['api', 'muse-code', 'none']),
+  workDir: z.string().nullable(),
   branch: z.string().nullable(),
   baseCommit: z.string().nullable(),
   patchCommit: z.string().nullable(),
@@ -57,7 +72,11 @@ export const PatchRecord = z.object({
       usd: z.number(),
     }),
   ),
+  rejectedFiles: z
+    .array(z.string())
+    .describe('files a backend changed outside the allowlist; the change was reverted'),
   rescan: z.object({
+    ran: z.boolean(),
     before: z.object({ total: z.number().int(), byClass: z.record(z.string(), z.number().int()) }),
     after: z.object({ total: z.number().int(), byClass: z.record(z.string(), z.number().int()) }),
     resolved: z.array(z.string()).describe('selected finding ids that no longer appear'),
@@ -75,10 +94,14 @@ export const PatchRecord = z.object({
     outputTail: z.string(),
     durationMs: z.number(),
   }),
+  rescanClean: z.boolean(),
   green: z.boolean(),
+  error: z.string().nullable(),
   usd: z.number(),
 });
 export type PatchRecordT = z.infer<typeof PatchRecord>;
+
+const COPY_SKIP = new Set(['node_modules', '.git', 'dist', 'build', '.next', 'coverage', 'runs']);
 
 export async function runPatchLoop(runDir: string, options: PatchOptions): Promise<PatchRecordT> {
   const startedAt = new Date().toISOString();
@@ -88,10 +111,7 @@ export async function runPatchLoop(runDir: string, options: PatchOptions): Promi
   const findings = z
     .array(Finding)
     .parse(JSON.parse(await readFile(join(runDir, 'findings.json'), 'utf8')));
-  const repoDir = manifest.target.path;
 
-  // Which findings to patch: confirmed or likely verdicts first; without a
-  // reasoning stage, the criticals in the top classes.
   const classes = options.classes ?? topClasses(findings);
   const judged = findings.filter((f) => f.reasoning);
   const pool = judged.length
@@ -107,10 +127,21 @@ export async function runPatchLoop(runDir: string, options: PatchOptions): Promi
   info(`patching ${selected.length} findings in classes: ${classes.join(', ')}`);
 
   const backend = resolveBackend(options);
+  const rate = backend === 'api' && options.client ? rateFor(options.client.model) : null;
+  const budget = new ReasoningBudget({
+    perRunUsd: options.budgetUsd,
+    maxFindingsPerFile: 50,
+    perFileInputTokens: 400_000,
+  });
   const outcomes: PatchOutcome[] = [];
+  const rejectedFiles: string[] = [];
+  let workDir: string | null = null;
   let branch: string | null = null;
   let baseCommit: string | null = null;
   let patchCommit: string | null = null;
+  let error: string | null = null;
+  let afterFindings: FindingT[] | null = null;
+  let lineMap = parseUnifiedDiff('');
   let tests: TestRunResult = {
     ran: false,
     passed: false,
@@ -120,89 +151,118 @@ export async function runPatchLoop(runDir: string, options: PatchOptions): Promi
     durationMs: 0,
   };
 
-  if (!options.dryRun && selected.length > 0 && backend !== 'none') {
-    await ensureRepo(repoDir);
-    baseCommit = (await git(repoDir, ['rev-parse', 'HEAD'])).trim();
-    branch = `vibeaudit2/patch-${manifest.runId}`;
-    await createBranch(repoDir, branch);
+  try {
+    if (!options.dryRun && selected.length > 0 && backend !== 'none') {
+      workDir = await workingCopy(runDir, manifest.target.kind, manifest.target.path);
+      await ensureRepo(workDir);
+      baseCommit = (await git(workDir, ['rev-parse', 'HEAD'])).trim();
+      branch = `vibeaudit2/patch-${manifest.runId}`;
+      await createBranch(workDir, branch);
 
-    if (backend === 'api' && options.client) {
-      const rate = rateFor(options.client.model);
-      for (const finding of selected) {
-        try {
-          const outcome = await apiPatch(options.client, repoDir, finding, rate); // vibe-audit-ignore perf-no-await-parallel
+      if (backend === 'api' && options.client && rate) {
+        for (const finding of selected) {
+          const decision = budget.canSpend(finding.file, 6_000, rate);
+          if (!decision.ok) {
+            outcomes.push({
+              findingIds: [finding.id],
+              backend: 'api',
+              plan: null,
+              edits: [],
+              note: `skipped: ${decision.reason}`,
+              usd: 0,
+              usage: null,
+            });
+            continue;
+          }
+          const outcome = await apiPatch(options.client, workDir, finding, rate); // vibe-audit-ignore perf-no-await-parallel
+          if (outcome.usage) budget.record(finding.file, outcome.usage, rate);
           outcomes.push(outcome);
           const applied = outcome.edits.filter((e) => e.applied).length;
           info(
             `${finding.file}:${finding.line ?? '?'} ${finding.ruleId}: ${applied}/${outcome.edits.length} edits applied ($${outcome.usd.toFixed(4)})`,
           );
-        } catch (error) {
-          outcomes.push({
-            findingIds: [finding.id],
-            backend: 'api',
-            plan: null,
-            edits: [],
-            note: `error: ${(error as Error).message.slice(0, 300)}`,
-            usd: 0,
+        }
+      } else if (backend === 'muse-code') {
+        const outcome = await museCodePatch(workDir, selected, {
+          model: options.museModel,
+          maxSteps: 60,
+          timeoutMs: 20 * 60_000,
+          apiKey: options.client?.apiKey ?? null,
+        });
+        outcomes.push(outcome);
+        info(`muse code: ${outcome.note.slice(0, 200)}`);
+        // The agent edits the tree itself, so the allowlist is enforced afterwards.
+        const allowed = new Set(selected.map((f) => f.file.replace(/\\/g, '/')));
+        const changed = await changedFiles(workDir, baseCommit);
+        for (const file of changed) {
+          if (forbiddenPathReason(file) || !allowed.has(file)) {
+            rejectedFiles.push(file);
+            await revertFile(workDir, file); // vibe-audit-ignore perf-no-await-parallel
+          }
+        }
+        if (rejectedFiles.length)
+          warn(
+            `reverted ${rejectedFiles.length} file(s) outside the allowlist: ${rejectedFiles.join(', ')}`,
+          );
+      }
+
+      patchCommit = await commitAll(
+        workDir,
+        `vibeaudit2: patch ${selected.length} findings (${classes.join(', ')})`,
+      );
+      if (patchCommit) {
+        lineMap = parseUnifiedDiff(
+          await git(workDir, ['diff', '--no-ext-diff', '-U0', baseCommit]),
+        );
+      }
+      await writeText(
+        join(runDir, 'patch.diff'),
+        patchCommit ? await diffAgainst(workDir, baseCommit) : '',
+      );
+
+      if (patchCommit) {
+        const engine = await runEngineScan(workDir, {
+          sca: manifest.engine.sca,
+          trustTargetConfig: manifest.engine.trustTargetConfig,
+        });
+        afterFindings = await normalizeFindings(engine.output, workDir, { contextLines: 6 });
+        await writeJson(join(runDir, 'findings.after.json'), afterFindings);
+        if (options.runTests) {
+          tests = await runProjectTests(workDir, {
+            useDocker: options.useDocker,
+            allowLocal: options.allowLocalTests,
           });
-          warn(`patch failed for ${finding.id}: ${(error as Error).message}`);
+          info(
+            `project tests: ${tests.ran ? (tests.passed ? 'passed' : 'failed') : 'not run'} (${tests.runner})`,
+          );
         }
       }
-    } else if (backend === 'muse-code') {
-      const outcome = await museCodePatch(repoDir, selected, {
-        model: options.museModel,
-        maxSteps: 60,
-        timeoutMs: 20 * 60_000,
-      });
-      outcomes.push(outcome);
-      info(`muse code: ${outcome.note.slice(0, 200)}`);
     }
-
-    patchCommit = await commitAll(
-      repoDir,
-      `vibeaudit2: patch ${selected.length} findings (${classes.join(', ')})`,
-    );
-    const diff = baseCommit ? await diffAgainst(repoDir, baseCommit) : '';
-    await writeText(join(runDir, 'patch.diff'), diff);
+  } catch (caught) {
+    error = (caught as Error).message.slice(0, 500);
+    warn(`patch loop stopped: ${error}`);
+  } finally {
+    if (workDir && baseCommit && manifest.target.kind === 'github') {
+      // Leave the clone on its original commit so a later stage sees the before state.
+      await checkout(workDir, baseCommit).catch(() => undefined);
+    }
   }
 
-  // Re-scan the patched tree with the same engine settings as the original run.
-  const beforeByClass = countBy(selected, (f) => f.vulnClass);
-  let afterFindings: FindingT[] = findings;
-  if (!options.dryRun && patchCommit) {
-    const engine = await runEngineScan(repoDir, {
-      sca: manifest.engine.sca,
-      trustTargetConfig: manifest.engine.trustTargetConfig,
-    });
-    afterFindings = await normalizeFindings(engine.output, repoDir, { contextLines: 6 });
-    await writeJson(join(runDir, 'findings.after.json'), afterFindings);
-  }
-  const afterKeys = new Set(afterFindings.map(locationKey));
-  const beforeKeys = new Set(findings.map(locationKey));
-  const resolved = selected.filter((f) => !afterKeys.has(locationKey(f))).map((f) => f.id);
-  const remaining = selected.filter((f) => afterKeys.has(locationKey(f))).map((f) => f.id);
-  const introduced = afterFindings.filter((f) => !beforeKeys.has(locationKey(f))).length;
+  // Compare through the diff's line map, never by raw line number.
+  const selectedIds = new Set(selected.map((f) => f.id));
+  const comparison = afterFindings
+    ? compareScans(findings, afterFindings, selectedIds, lineMap)
+    : { resolved: [], remaining: selected.map((f) => f.id), introduced: 0 };
+  const { resolved, remaining, introduced } = comparison;
+  const rescanClean = afterFindings !== null && remaining.length === 0 && introduced === 0;
+  const green = rescanClean && tests.ran && tests.passed && error === null;
 
-  if (!options.dryRun && patchCommit && options.runTests) {
-    tests = await runProjectTests(repoDir, {
-      useDocker: options.useDocker,
-      allowLocal: options.allowLocalTests,
-    });
-    info(
-      `project tests: ${tests.ran ? (tests.passed ? 'passed' : 'failed') : 'not run'} (${tests.runner})`,
-    );
-  }
-
-  const green =
-    patchCommit !== null &&
-    remaining.length === 0 &&
-    introduced === 0 &&
-    (!options.runTests || (tests.ran && tests.passed));
   const record: PatchRecordT = {
     runId: manifest.runId,
     startedAt,
     finishedAt: new Date().toISOString(),
     backend,
+    workDir,
     branch,
     baseCommit,
     patchCommit,
@@ -220,12 +280,14 @@ export async function runPatchLoop(runDir: string, options: PatchOptions): Promi
       note: o.note,
       usd: o.usd,
     })),
+    rejectedFiles,
     rescan: {
-      before: { total: selected.length, byClass: beforeByClass },
+      ran: afterFindings !== null,
+      before: { total: selected.length, byClass: countBy(selected, (f) => f.vulnClass) },
       after: {
         total: remaining.length,
         byClass: countBy(
-          selected.filter((f) => afterKeys.has(locationKey(f))),
+          selected.filter((f) => remaining.includes(f.id)),
           (f) => f.vulnClass,
         ),
       },
@@ -234,7 +296,9 @@ export async function runPatchLoop(runDir: string, options: PatchOptions): Promi
       introduced,
     },
     tests,
+    rescanClean,
     green,
+    error,
     usd: Number(outcomes.reduce((n, o) => n + o.usd, 0).toFixed(4)),
   };
   await writeJson(join(runDir, 'patch.json'), record);
@@ -242,21 +306,37 @@ export async function runPatchLoop(runDir: string, options: PatchOptions): Promi
     ...manifest,
     stages: {
       ...manifest.stages,
-      patch: options.dryRun ? 'pending' : patchCommit ? 'done' : 'failed',
+      patch: options.dryRun ? 'pending' : error ? 'failed' : patchCommit ? 'done' : 'failed',
     },
   });
   info(
     options.dryRun
       ? `dry run: ${selected.length} findings would be patched with the ${backend} backend`
-      : `patch loop ${green ? 'GREEN' : 'NOT GREEN'}: ${resolved.length} resolved, ${remaining.length} remaining, ${introduced} introduced, tests ${tests.ran ? (tests.passed ? 'passed' : 'failed') : 'not run'}`,
+      : `patch loop ${green ? 'GREEN' : rescanClean ? 'RE-SCAN CLEAN, tests not run or failed' : 'NOT GREEN'}: ${resolved.length} resolved, ${remaining.length} remaining, ${introduced} introduced, tests ${tests.ran ? (tests.passed ? 'passed' : 'failed') : 'not run'}, $${record.usd.toFixed(4)}`,
   );
   return record;
 }
 
+/** GitHub targets are already the pipeline's clone. Local folders are copied in, never patched in place. */
+async function workingCopy(
+  runDir: string,
+  kind: 'github' | 'local',
+  targetPath: string,
+): Promise<string> {
+  if (kind === 'github') return targetPath;
+  const dest = resolve(runDir, 'repo');
+  if (!existsSync(dest)) {
+    cpSync(targetPath, dest, {
+      recursive: true,
+      filter: (src) => !COPY_SKIP.has(src.split(/[\\/]/).pop() ?? ''),
+    });
+  }
+  return dest;
+}
+
 function resolveBackend(options: PatchOptions): 'api' | 'muse-code' | 'none' {
+  // Muse Code runs an agent inside the repository, so it is never picked by default.
   if (options.backend === 'muse-code') return museAvailable() ? 'muse-code' : 'none';
-  if (options.backend === 'api') return options.client ? 'api' : 'none';
-  if (museAvailable()) return 'muse-code';
   return options.client ? 'api' : 'none';
 }
 
@@ -273,6 +353,11 @@ function dedupeByLocation(findings: readonly FindingT[]): FindingT[] {
   return out;
 }
 
-function locationKey(f: FindingT): string {
-  return `${f.ruleId}|${f.file}|${f.line ?? 0}`;
+/** Put a file back to its committed state; a brand-new file is removed instead. */
+async function revertFile(repoDir: string, file: string): Promise<void> {
+  try {
+    await git(repoDir, ['checkout', '-q', '--', file]);
+  } catch {
+    await git(repoDir, ['rm', '-q', '-f', '--', file]).catch(() => undefined);
+  }
 }

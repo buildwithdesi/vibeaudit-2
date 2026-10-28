@@ -33,15 +33,16 @@ Scan options
 Reason options
   --dry-run              Build and save every prompt, estimate the cost, make no API call
   --classes <a,b,c>      Vulnerability classes to judge (default: the top five in the run)
-  --max-findings <n>     Cap on findings sent to the reasoning model (default: 40)
+  --max-findings <n>     Cap on findings sent to the reasoning model (default: 40; patch: 10)
+  --force                Judge findings again even when they already carry a verdict
   --effort <level>       Reasoning effort for exploitability: minimal, low, medium, high, xhigh, max (default: high)
   --budget-usd <n>       Dollar cap per run (default: 5)
   --no-triage            Skip the open-weight triage pass even when TRIAGE_* is configured
 
 Patch options
-  --backend <auto|api|muse-code>   auto picks Muse Code when the muse CLI is installed, else the Model API
+  --backend <auto|api|muse-code>   auto uses the Model API; muse-code runs the Muse Code agent and must be asked for
   --run-tests            Run the project's own test script after patching
-  --docker               Run those tests in a throwaway node:24 container (default when Docker is available)
+  --docker / --no-docker Run those tests in a throwaway node:24 container (default: on when Docker is available)
   --allow-local-tests    Allow the tests to run on this machine when Docker is not available
   --muse-model <id>      Model for Muse Code (default: muse-spark-1.3)
 
@@ -57,6 +58,7 @@ async function main(argv: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args: argv,
     allowPositionals: true,
+    allowNegative: true,
     options: {
       out: { type: 'string', default: 'runs' },
       ref: { type: 'string' },
@@ -66,7 +68,8 @@ async function main(argv: string[]): Promise<number> {
       json: { type: 'boolean', default: false },
       'dry-run': { type: 'boolean', default: false },
       classes: { type: 'string' },
-      'max-findings': { type: 'string', default: '40' },
+      'max-findings': { type: 'string' },
+      force: { type: 'boolean', default: false },
       effort: { type: 'string', default: DEFAULT_EFFORT.exploit },
       'budget-usd': { type: 'string', default: '5' },
       'no-triage': { type: 'boolean', default: false },
@@ -153,7 +156,8 @@ async function main(argv: string[]): Promise<number> {
       if (backend !== 'auto' && backend !== 'api' && backend !== 'muse-code') {
         return usageError('--backend must be auto, api, or muse-code.');
       }
-      const maxFindings = Number.parseInt(values['max-findings'], 10);
+      const maxFindings = Number.parseInt(values['max-findings'] ?? '10', 10);
+      const budgetUsd = Number.parseFloat(values['budget-usd']);
       const record = await runPatchLoop(runDir, {
         backend,
         client: clientFromEnv('META'),
@@ -168,12 +172,20 @@ async function main(argv: string[]): Promise<number> {
         runTests: values['run-tests'],
         useDocker: values.docker,
         allowLocalTests: values['allow-local-tests'],
+        budgetUsd: Number.isFinite(budgetUsd) && budgetUsd > 0 ? budgetUsd : 5,
         dryRun: values['dry-run'],
       });
       info(
         `patch record: ${runDir}/patch.json${record.branch ? ` (branch ${record.branch})` : ''}`,
       );
-      return record.green || values['dry-run'] ? 0 : 1;
+      if (values['dry-run']) return 0;
+      if (record.green) return 0;
+      if (record.rescanClean) {
+        info(
+          're-scan is clean but the project tests did not run or did not pass, so this is not green',
+        );
+      }
+      return 1;
     }
     default: {
       return usageError(`Unknown command "${command}".`);
@@ -186,17 +198,18 @@ async function reason(
   values: {
     'dry-run': boolean;
     classes?: string | undefined;
-    'max-findings': string;
+    'max-findings'?: string | undefined;
     effort: string;
     'budget-usd': string;
     'no-triage': boolean;
+    force: boolean;
   },
 ): Promise<number> {
   if (!EFFORTS.has(values.effort as ReasoningEffort)) {
     process.stderr.write(`--effort must be one of ${[...EFFORTS].join(', ')}.\n`);
     return 2;
   }
-  const maxFindings = Number.parseInt(values['max-findings'], 10);
+  const maxFindings = Number.parseInt(values['max-findings'] ?? '40', 10);
   const budgetUsd = Number.parseFloat(values['budget-usd']);
   if (
     !Number.isFinite(maxFindings) ||
@@ -209,7 +222,7 @@ async function reason(
     );
     return 2;
   }
-  await runReasoning(runDir, {
+  const record = await runReasoning(runDir, {
     reason: clientFromEnv('META'),
     triage: values['no-triage'] ? null : clientFromEnv('TRIAGE'),
     dryRun: values['dry-run'],
@@ -222,8 +235,9 @@ async function reason(
     maxFindings,
     effort: { ...DEFAULT_EFFORT, exploit: values.effort as ReasoningEffort },
     budget: { perRunUsd: budgetUsd },
+    force: values.force,
   });
-  return 0;
+  return record.aborted ? 1 : 0;
 }
 
 function resolveRunDir(input: string): string {

@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { mkdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
+import { scrubbedEnv } from '../util/env.ts';
 import type { GitHubTarget } from './target.ts';
 
 const run = promisify(execFile);
@@ -41,6 +42,10 @@ export async function cloneGitHub(
     'core.fsmonitor=false',
     '-c',
     'core.longpaths=true',
+    '-c',
+    'protocol.allow=never',
+    '-c',
+    'protocol.https.allow=always',
     'clone',
     '--depth',
     '1',
@@ -51,7 +56,7 @@ export async function cloneGitHub(
   if (target.ref) args.push('--branch', target.ref);
   args.push('--', target.cloneUrl, dest);
 
-  const env = { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_LFS_SKIP_SMUDGE: '1' };
+  const env = scrubbedEnv({ GIT_LFS_SKIP_SMUDGE: '1', GIT_CONFIG_NOSYSTEM: '1' });
   try {
     await run('git', args, { timeout, env, windowsHide: true, maxBuffer: 8 * 1024 * 1024 });
   } catch (error) {

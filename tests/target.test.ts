@@ -45,6 +45,9 @@ test('rejects anything that could become a git flag or escape a path', () => {
     'https://gitlab.com/owner/repo',
     'owner/repo/extra',
     'not a repo at all',
+    'examples/seeded-ap',
+    './nope',
+    'C:\\nope\\dir',
   ];
   for (const input of bad) {
     assert.throws(

@@ -3,6 +3,7 @@ import { access, readFile, rename } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { V1Output, type V1OutputT } from '../model/finding.ts';
+import { scrubbedEnv } from '../util/env.ts';
 
 /**
  * The v1 engine (`@jackdog668/vibeaudit`) is prior work. 2.0 never copies its
@@ -136,7 +137,7 @@ function runEngine(
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(process.execPath, [engineBinPath(), ...args], {
-      env: { ...process.env, NO_COLOR: '1', FORCE_COLOR: '0' },
+      env: scrubbedEnv(),
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     });

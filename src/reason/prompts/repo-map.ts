@@ -1,5 +1,5 @@
 import type { ChatMessage } from '../meta-client.ts';
-import { clip, repoData, UNTRUSTED_RULE } from './shared.ts';
+import { clip, inline, repoData, UNTRUSTED_RULE } from './shared.ts';
 
 /**
  * Repo map: one Muse Spark call per run that turns a file tree plus the
@@ -35,7 +35,7 @@ export function buildRepoMapMessages(input: RepoMapInput): ChatMessage[] {
     .map((e) => repoData(e.file, clip(e.excerpt, 4_000)))
     .join('\n\n');
   const user = [
-    `Repository: ${input.label}`,
+    `Repository: ${inline(input.label, 120)}`,
     '',
     'File tree:',
     repoData('file-tree', clip(input.fileTree, 16_000)),

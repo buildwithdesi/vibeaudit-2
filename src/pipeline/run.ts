@@ -3,8 +3,9 @@ import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { ENGINE_NAME, engineVersion, listEngineRules, runEngineScan } from '../engine/v1.ts';
 import { cloneGitHub } from '../intake/clone.ts';
-import { parseTarget, type ScanTarget } from '../intake/target.ts';
+import { buildGitHubTarget, parseTarget, type ScanTarget } from '../intake/target.ts';
 import type { FindingT, RunManifestT } from '../model/finding.ts';
+import { redactSecrets } from '../normalize/context.ts';
 import { countBy, normalizeFindings } from '../normalize/index.ts';
 import { renderSummary } from '../report/summary.ts';
 import { slug, writeJson, writeText } from '../util/fs.ts';
@@ -43,7 +44,9 @@ export async function runScan(input: string, options: ScanOptions): Promise<Scan
   let commit: string | null = null;
   let cloneMs = 0;
   if (target.kind === 'github') {
-    const cloneTarget = options.ref ? { ...target, ref: options.ref } : target;
+    const cloneTarget = options.ref
+      ? buildGitHubTarget(target.owner, target.repo, options.ref)
+      : target;
     info(`cloning ${cloneTarget.webUrl}${cloneTarget.ref ? ` @ ${cloneTarget.ref}` : ''}`);
     const cloneStart = performance.now();
     const clone = await cloneGitHub(cloneTarget, join(runDir, 'repo'));
@@ -63,7 +66,10 @@ export async function runScan(input: string, options: ScanOptions): Promise<Scan
     sca: options.sca,
     trustTargetConfig: options.trustTargetConfig,
   });
-  await writeJson(join(runDir, 'engine-output.json'), engine.output);
+  await writeJson(
+    join(runDir, 'engine-output.json'),
+    JSON.parse(redactSecrets(JSON.stringify(engine.output)).text),
+  );
   info(
     `engine: ${engine.output.summary.total} findings in ${engine.output.summary.filesScanned} files (${engine.durationMs} ms)`,
   );

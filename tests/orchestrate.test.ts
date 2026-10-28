@@ -101,6 +101,7 @@ test('dry run writes every prompt, estimates cost, and makes no call', async () 
     maxFindings: 40,
     effort: DEFAULT_EFFORT,
     budget: {},
+    force: false,
   });
   assert.equal(log.length, 0, 'no API call in a dry run');
   assert.equal(record.calls, 0);
@@ -125,6 +126,7 @@ test('live run fills triage and reasoning slots, respects the budget, and feeds 
     maxFindings: 12,
     effort: DEFAULT_EFFORT,
     budget: { maxFindingsPerFile: 2 },
+    force: false,
   });
   assert.equal(log.filter((l) => l.schema === 'RepoMap').length, 1, 'one repo map call');
   assert.ok(record.repoMap, 'repo map stored');
@@ -155,13 +157,13 @@ test('live run fills triage and reasoning slots, respects the budget, and feeds 
   assert.ok(report.includes('# Proof of risk: seeded-app'));
   assert.ok(report.includes('Anyone on the internet can read or erase every user account.'));
   assert.ok(report.includes('**The proof, in the code:**'));
-  assert.ok(report.includes('Database injection'));
+  assert.ok(report.includes('Someone can rewrite your database commands'));
   assert.ok(!report.includes('Winter2026Prod'));
 });
 
 test('report renders without a reasoning stage and says so', async () => {
   const runDir = await freshRun();
   const report = await renderProofOfRisk(runDir);
-  assert.ok(report.includes('The reasoning stage has not run on this scan yet'));
-  assert.ok(report.includes('_Not judged by the reasoning stage on this scan._'));
+  assert.ok(report.includes('This is a first pass.'));
+  assert.ok(report.includes('_Not checked for exploitability on this scan._'));
 });

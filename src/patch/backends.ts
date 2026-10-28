@@ -1,15 +1,18 @@
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { readFile, writeFile } from 'node:fs/promises';
+import { lstat, readFile, unlink, writeFile } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import type { FindingT } from '../model/finding.ts';
 import { redactSecrets } from '../normalize/context.ts';
-import { type ClientConfig, completeStructured } from '../reason/meta-client.ts';
+import { costUsd, type Rate, type Usage } from '../reason/budget.ts';
+import { type ClientConfig, completeStructured, ModelApiError } from '../reason/meta-client.ts';
+import { scrubbedEnv } from '../util/env.ts';
 import { applyEdits, type EditResult, PatchPlan, type PatchPlanT } from './edits.ts';
 import { buildMuseCodePrompt, buildPatchMessages } from './prompts.ts';
 
 const run = promisify(execFile);
+const MODEL_ID = /^[\w.:-]+$/;
 
 export interface PatchOutcome {
   findingIds: string[];
@@ -18,101 +21,155 @@ export interface PatchOutcome {
   edits: EditResult[];
   note: string;
   usd: number;
+  usage: Usage | null;
 }
 
 /**
  * Backend one: Muse Spark through the Model API, one finding at a time,
- * answering with exact search-and-replace edits that this process applies.
- * The model never touches the disk.
+ * answering with exact search-and-replace edits that this process applies
+ * to the finding's own file only. The model never touches the disk.
  */
 export async function apiPatch(
   client: ClientConfig,
   repoDir: string,
   finding: FindingT,
-  rate: { input: number; cachedInput: number; output: number },
+  rate: Rate,
 ): Promise<PatchOutcome> {
   const root = resolve(repoDir);
   const abs = resolve(root, finding.file);
-  if (!abs.startsWith(root + sep)) {
-    return {
-      findingIds: [finding.id],
-      backend: 'api',
-      plan: null,
-      edits: [],
-      note: 'file path escapes the repository',
-      usd: 0,
-    };
+  const fail = (note: string): PatchOutcome => ({
+    findingIds: [finding.id],
+    backend: 'api',
+    plan: null,
+    edits: [],
+    note,
+    usd: 0,
+    usage: null,
+  });
+  if (!abs.startsWith(root + sep)) return fail('file path escapes the repository');
+  let info: Awaited<ReturnType<typeof lstat>>;
+  try {
+    info = await lstat(abs);
+  } catch {
+    return fail('file not found');
   }
+  if (info.isSymbolicLink() || !info.isFile()) return fail('target is not a regular file');
+  if (info.size > 512 * 1024) return fail('file larger than 512 KB; patch it by hand');
   const fileContent = await readFile(abs, 'utf8');
-  // The model sees the real file so its search strings match. Secrets are
-  // the exception: the masked version is sent, and an edit that targets a
-  // masked line fails the uniqueness check instead of leaking the secret.
+
+  // The model sees the masked file. An edit that targets a masked line fails
+  // the uniqueness check instead of leaking the secret.
   const messages = buildPatchMessages({
     finding,
     fileContent: redactSecrets(fileContent).text,
     relatedFiles: [],
   });
-  const result = await completeStructured(client, {
-    messages,
-    schema: PatchPlan,
-    schemaName: 'PatchPlan',
-    reasoningEffort: 'high',
-    maxOutputTokens: 4_000,
-  });
-  const usd =
-    (Math.max(0, result.usage.promptTokens - result.usage.cachedTokens) * rate.input +
-      result.usage.cachedTokens * rate.cachedInput +
-      result.usage.completionTokens * rate.output) /
-    1_000_000;
-  const plan = result.data;
-  if (plan.newDependencies.length > 0) {
+  let usage: Usage | null = null;
+  try {
+    const result = await completeStructured(client, {
+      messages,
+      schema: PatchPlan,
+      schemaName: 'PatchPlan',
+      reasoningEffort: 'high',
+      maxOutputTokens: 16_000,
+    });
+    usage = result.usage;
+    const usd = costUsd(result.usage, rate);
+    const plan = result.data;
+    if (plan.newDependencies.length > 0) {
+      return {
+        findingIds: [finding.id],
+        backend: 'api',
+        plan,
+        edits: [],
+        note: `rejected: the plan adds dependencies (${plan.newDependencies.join(', ')})`,
+        usd,
+        usage,
+      };
+    }
+    const edits = await applyEdits(repoDir, plan.edits, { allowedFiles: [finding.file] });
+    return { findingIds: [finding.id], backend: 'api', plan, edits, note: plan.note, usd, usage };
+  } catch (error) {
+    if (error instanceof ModelApiError && error.usage) usage = error.usage;
+    const usd = usage ? costUsd(usage, rate) : 0;
     return {
       findingIds: [finding.id],
       backend: 'api',
-      plan,
+      plan: null,
       edits: [],
-      note: `rejected: the plan adds dependencies (${plan.newDependencies.join(', ')})`,
+      note: `error: ${(error as Error).message.slice(0, 300)}`,
       usd,
+      usage,
     };
   }
-  const edits = await applyEdits(repoDir, plan.edits);
-  return { findingIds: [finding.id], backend: 'api', plan, edits, note: plan.note, usd };
 }
 
 /**
  * Backend two: Muse Code, Meta's coding agent, run headless inside the
- * sandbox clone with the prompt in a file. It edits the tree itself; the
- * loop reads the resulting diff from git.
+ * pipeline's copy of the repository with the prompt in a file. It edits the
+ * tree itself; the loop reads the diff back from git and rejects any change
+ * outside the allowed files. Contributor mode is forced off so the code is
+ * never used for training. The agent gets a scrubbed environment plus the
+ * one key it needs.
  */
 export async function museCodePatch(
   repoDir: string,
   findings: readonly FindingT[],
-  options: { model: string; maxSteps: number; timeoutMs: number; museBin?: string },
+  options: { model: string; maxSteps: number; timeoutMs: number; apiKey: string | null },
 ): Promise<PatchOutcome> {
-  const promptPath = join(repoDir, '.vibeaudit2-patch-prompt.md');
-  await writeFile(promptPath, buildMuseCodePrompt(findings), 'utf8');
-  const bin = options.museBin ?? 'muse';
+  const ids = findings.map((f) => f.id);
+  if (!MODEL_ID.test(options.model)) {
+    return {
+      findingIds: ids,
+      backend: 'muse-code',
+      plan: null,
+      edits: [],
+      note: `invalid model id "${options.model}"`,
+      usd: 0,
+      usage: null,
+    };
+  }
+  if (/-contributor$/i.test(options.model)) {
+    return {
+      findingIds: ids,
+      backend: 'muse-code',
+      plan: null,
+      edits: [],
+      note: 'contributor models are not allowed: they train on the code',
+      usd: 0,
+      usage: null,
+    };
+  }
+  const promptName = '.vibeaudit2-patch-prompt.md';
+  await writeFile(join(repoDir, promptName), buildMuseCodePrompt(findings), 'utf8');
+  // No argument contains a space or a shell character, so joining them on Windows is safe.
   const args = [
     'exec',
     '--json',
     '--trust-workspace',
     '--disable-request-user-input',
+    '--contributor-mode',
+    'off',
     '--model',
     options.model,
     '--max-model-steps',
     String(options.maxSteps),
     '--prompt-file',
-    promptPath,
+    promptName,
   ];
   let note: string;
   try {
-    const { stdout } = await run(bin, args, {
+    const { stdout } = await run('muse', args, {
       cwd: repoDir,
       windowsHide: true,
       timeout: options.timeoutMs,
       maxBuffer: 64 * 1024 * 1024,
       shell: process.platform === 'win32',
-      env: { ...process.env, MUSE_NO_AUTO_UPDATE: '1' },
+      env: scrubbedEnv({
+        MUSE_NO_AUTO_UPDATE: '1',
+        MUSE_CONTRIBUTOR_MODE: '0',
+        ...(options.apiKey ? { META_API_KEY: options.apiKey } : {}),
+      }),
     });
     note = summarizeMuseOutput(stdout);
   } catch (error) {
@@ -120,19 +177,19 @@ export async function museCodePatch(
     note = `muse exec failed: ${(e.stderr || e.message || '').trim().slice(-400)}`;
   } finally {
     try {
-      const { unlink } = await import('node:fs/promises');
-      await unlink(promptPath);
+      await unlink(join(repoDir, promptName));
     } catch {
       // Nothing to clean up.
     }
   }
   return {
-    findingIds: findings.map((f) => f.id),
+    findingIds: ids,
     backend: 'muse-code',
     plan: null,
     edits: [],
     note,
     usd: 0,
+    usage: null,
   };
 }
 

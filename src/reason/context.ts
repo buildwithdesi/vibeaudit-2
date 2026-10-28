@@ -1,8 +1,8 @@
 import type { Dirent } from 'node:fs';
-import { readdir, readFile, stat } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { basename, extname, join, posix, relative, resolve, sep } from 'node:path';
 import type { FindingT } from '../model/finding.ts';
-import { redactSecrets } from '../normalize/context.ts';
+import { isSecretFile, redactSecrets, safeResolve } from '../normalize/context.ts';
 import type { RepoMapT } from './schemas.ts';
 
 /**
@@ -54,7 +54,9 @@ export async function listFiles(repoDir: string, max = 4000): Promise<string[]> 
       if (entry.isDirectory()) {
         if (!SKIP_DIRS.has(entry.name)) await walk(join(dir, entry.name)); // vibe-audit-ignore perf-no-await-parallel
       } else if (entry.isFile()) {
-        out.push(relative(root, join(dir, entry.name)).split(sep).join(posix.sep));
+        const rel = relative(root, join(dir, entry.name)).split(sep).join(posix.sep);
+        // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping control characters is the point
+        if (!/[\u0000-\u001F\u007F]/.test(rel)) out.push(rel);
       }
     }
   }
@@ -63,7 +65,9 @@ export async function listFiles(repoDir: string, max = 4000): Promise<string[]> 
 }
 
 export function renderTree(files: readonly string[]): string {
-  return files.join('\n');
+  // Names can carry payloads too: control characters are stripped before they reach a prompt.
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping control characters is the point
+  return files.map((f) => f.replace(/[\u0000-\u001F\u007F-\u009F]/g, '?')).join('\n');
 }
 
 export async function readPackageJson(repoDir: string): Promise<string | null> {
@@ -175,11 +179,10 @@ async function findImporter(
 }
 
 async function safeRead(repoDir: string, file: string, maxLines: number): Promise<string | null> {
-  const root = resolve(repoDir);
-  const abs = resolve(root, file);
-  if (!abs.startsWith(root + sep)) return null;
+  if (isSecretFile(file)) return null;
+  const abs = await safeResolve(repoDir, file);
+  if (!abs) return null;
   try {
-    if ((await stat(abs)).size > 512 * 1024) return null;
     const lines = (await readFile(abs, 'utf8')).split(/\r?\n/).slice(0, maxLines);
     return redactSecrets(lines.join('\n')).text;
   } catch {

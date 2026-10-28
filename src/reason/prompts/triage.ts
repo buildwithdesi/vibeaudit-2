@@ -1,6 +1,6 @@
 import type { FindingT } from '../../model/finding.ts';
 import type { ChatMessage } from '../meta-client.ts';
-import { clip, repoData, UNTRUSTED_RULE } from './shared.ts';
+import { clip, inline, repoData, UNTRUSTED_RULE } from './shared.ts';
 
 /**
  * Triage: a cheap open-weight pass (Muse Glimmer) that answers one question
@@ -30,11 +30,13 @@ export interface TriageInput {
 export function buildTriageMessages(input: TriageInput): ChatMessage[] {
   const f = input.finding;
   const user = [
-    input.repoSummary ? `Repository summary: ${clip(input.repoSummary, 600)}` : '',
-    `File: ${f.file}${f.line ? `:${f.line}` : ''}`,
-    input.fileRole ? `File role from the repo map: ${input.fileRole}` : '',
+    input.repoSummary
+      ? `Repository summary:\n${repoData('repo-summary', clip(input.repoSummary, 600))}`
+      : '',
+    `File: ${inline(f.file)}${f.line ? `:${f.line}` : ''}`,
+    input.fileRole ? `File role from the repo map: ${inline(input.fileRole, 40)}` : '',
     `Rule: ${f.ruleId} (${f.ruleName}), severity ${f.severity}, class ${f.vulnClass}`,
-    `What the rule says: ${clip(f.message, 400)}`,
+    `What the rule says: ${inline(f.message, 400)}`,
     f.evidence ? `Flagged evidence:\n${repoData('evidence', clip(f.evidence, 400))}` : '',
     f.context
       ? `Code around the flagged line:\n${repoData(f.file, clip(f.context.code, 3_000))}`

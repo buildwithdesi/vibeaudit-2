@@ -51,6 +51,7 @@ export function parseTarget(input: string): ScanTarget {
     return { kind: 'local', path: asPath, label: basename(asPath) || 'local' };
   }
 
+  if (looksLikePath(raw)) throw new TargetError(`Folder not found: ${asPath}`);
   const match = GITHUB_URL_RE.exec(raw) ?? SHORTHAND_RE.exec(raw);
   if (!match?.groups) {
     throw new TargetError(`"${raw}" is not a GitHub URL, owner/repo, or an existing folder.`);
@@ -60,6 +61,17 @@ export function parseTarget(input: string): ScanTarget {
     match.groups.repo ?? '',
     match.groups.ref ?? null,
   );
+}
+
+/** Drive letters, dots, slashes at the start, backslashes, or more than one slash: a path, not owner/repo. */
+function looksLikePath(raw: string): boolean {
+  if (/^(?:[A-Za-z]:|[./~\\])/.test(raw)) return true;
+  if (raw.includes('\\')) return true;
+  if (/^(?:https?:\/\/)?(?:www\.)?github\.com\//i.test(raw)) return false;
+  if ((raw.match(/\//g) ?? []).length > 1) return true;
+  // "examples/seeded-ap": the first segment is a folder here, so it is a mistyped path, not an owner.
+  const first = raw.split('/')[0] ?? '';
+  return first !== '' && existsSync(resolve(first)) && statSync(resolve(first)).isDirectory();
 }
 
 export function buildGitHubTarget(
