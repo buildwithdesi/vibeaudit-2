@@ -5,7 +5,7 @@ import { parseArgs } from 'node:util';
 import { engineVersion, listEngineRules } from './engine/v1.ts';
 import { VULN_CLASS_IDS } from './model/classes.ts';
 import { museAvailable } from './patch/backends.ts';
-import { runPatchLoop } from './patch/loop.ts';
+import { greenBlockers, isClosed, runPatchLoop } from './patch/loop.ts';
 import { runScan } from './pipeline/run.ts';
 import { type ClientConfig, clientFromEnv, type ReasoningEffort } from './reason/meta-client.ts';
 import { DEFAULT_EFFORT, type ReasonOptions, runReasoning } from './reason/orchestrate.ts';
@@ -207,10 +207,8 @@ async function main(argv: string[]): Promise<number> {
         warn(`project tests not run: ${record.tests.outputTail}`);
       }
       if (record.green) return 0;
-      if (record.rescanClean) {
-        info(
-          're-scan is clean but the project tests did not run or did not pass, so this is not green',
-        );
+      if (isClosed(record)) {
+        info(`closed, but not green because ${greenBlockers(record).join(' and ')}`);
       }
       return 1;
     }

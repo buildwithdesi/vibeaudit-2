@@ -76,6 +76,14 @@ export function countSuppressions(text: string): number {
   return text.match(/vibe-audit-ignore/gi)?.length ?? 0;
 }
 
+/**
+ * Secret masks in a text. The model reads the masked file, so a patch that
+ * raises this count would write a placeholder over a real value.
+ */
+function countMasks(text: string): number {
+  return text.split('[REDACTED').length - 1;
+}
+
 export interface ApplyOptions {
   /** Only these files may be edited. Usually the finding's own file. */
   allowedFiles: readonly string[];
@@ -164,6 +172,14 @@ export async function applyEdits(
         failed = true;
         break;
       }
+      if (countMasks(replace) > countMasks(search)) {
+        staged.push({
+          edit,
+          reason: 'replacement would write a secret mask placeholder into the code',
+        });
+        failed = true;
+        break;
+      }
       const first = working.indexOf(search);
       if (first < 0) {
         staged.push({ edit, reason: 'search text not found' });
@@ -181,6 +197,10 @@ export async function applyEdits(
     // Checked on the result too: edits can assemble a suppression none of them holds alone.
     if (!failed && countSuppressions(working) > countSuppressions(content)) {
       rejectAll('the edits together would suppress the scanner instead of fixing the code');
+      continue;
+    }
+    if (!failed && countMasks(working) > countMasks(content)) {
+      rejectAll('the edits together would write a secret mask placeholder into the code');
       continue;
     }
     if (failed) {
