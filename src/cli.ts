@@ -290,7 +290,8 @@ function parseClasses(raw: string | undefined): string[] | null | number {
 /**
  * Why the patch loop would run with no backend, or null when it has one. The
  * loop itself (resolveBackend) falls back to "none" silently and can then
- * only report every finding as still flagged.
+ * only report every finding as still flagged. These rules copy resolveBackend
+ * in src/patch/loop.ts: change both together.
  */
 function missingPatchBackend(
   backend: 'auto' | 'api' | 'muse-code',
