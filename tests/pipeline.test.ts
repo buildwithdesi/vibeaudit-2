@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { test } from 'node:test';
 import { RunManifest } from '../src/model/finding.ts';
 import { assertRuleListComplete, runScan } from '../src/pipeline/run.ts';
@@ -88,4 +88,43 @@ test('a double-quoted token in engine evidence is masked without breaking engine
     'the token line was flagged',
   );
   assert.ok(!raw.includes('abcd1234abcd1234'), 'engine-output.json never carries the token');
+});
+
+test('git run on a local target gets the scrubbed env, not API keys', {
+  skip: process.platform === 'win32' ? 'uses a POSIX shell script as a git shim' : false,
+}, async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'va2-run-'));
+  const saved = { PATH: process.env.PATH, META_API_KEY: process.env.META_API_KEY };
+  t.after(async () => {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    await rm(root, { recursive: true, force: true });
+  });
+  const shim = join(root, 'bin');
+  const record = join(root, 'git-calls.txt');
+  await mkdir(shim);
+  await writeFile(
+    join(shim, 'git'),
+    `#!/bin/sh\necho "args: $*" >> '${record}'\nenv >> '${record}'\necho ${'a'.repeat(40)}\n`,
+    { mode: 0o755 },
+  );
+  process.env.PATH = `${shim}${delimiter}${process.env.PATH ?? ''}`;
+  process.env.META_API_KEY = 'FAKEZ9-meta-key';
+  const app = join(root, 'app');
+  await mkdir(app);
+  await writeFile(join(app, 'index.js'), 'export const x = 1;\n');
+
+  const result = await runScan(app, {
+    outDir: join(root, 'runs'),
+    ref: null,
+    sca: false,
+    trustTargetConfig: false,
+    contextLines: 2,
+  });
+  assert.equal(result.manifest.commit, 'a'.repeat(40), 'the commit came from the shim');
+  const calls = readFileSync(record, 'utf8');
+  assert.match(calls, /args: .*rev-parse HEAD/);
+  assert.ok(!calls.includes('FAKEZ9'), 'no API key reached git');
 });

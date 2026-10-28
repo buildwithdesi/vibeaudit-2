@@ -14,6 +14,7 @@ import type { FindingT, RunManifestT } from '../model/finding.ts';
 import { redactSecrets } from '../normalize/context.ts';
 import { countBy, normalizeFindings } from '../normalize/index.ts';
 import { renderSummary } from '../report/summary.ts';
+import { scrubbedEnv } from '../util/env.ts';
 import { slug, writeJson, writeText } from '../util/fs.ts';
 import { debug, info } from '../util/log.ts';
 
@@ -162,11 +163,18 @@ function makeRunId(target: ScanTarget): string {
   return `${stamp}-${slug(target.label)}-${randomBytes(2).toString('hex')}`;
 }
 
+/**
+ * The folder may be someone else's repository, so git gets the same scrubbed
+ * environment as every other child process, and its fsmonitor setting (a
+ * command the repo's own config can name) is switched off.
+ */
 async function localCommit(dir: string): Promise<string | null> {
   try {
     const { execFile } = await import('node:child_process');
     const { promisify } = await import('node:util');
-    const { stdout } = await promisify(execFile)('git', ['-C', dir, 'rev-parse', 'HEAD'], {
+    const args = ['-C', dir, '-c', 'core.fsmonitor=false', 'rev-parse', 'HEAD'];
+    const { stdout } = await promisify(execFile)('git', args, {
+      env: scrubbedEnv({ GIT_CONFIG_NOSYSTEM: '1' }),
       timeout: 10_000,
       windowsHide: true,
     });
