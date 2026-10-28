@@ -13,22 +13,40 @@ function fixture(): string {
   mkdirSync(join(repo, 'routes'), { recursive: true });
   writeFileSync(join(repo, 'routes', 'users.js'), 'const rows = await db.query(sql);\n');
   writeFileSync(join(dir, 'host.txt'), 'root:x:0:0:root:/root:/bin/bash\n');
-  symlinkSync(join(dir, 'host.txt'), join(repo, 'link.txt'));
   writeFileSync(join(repo, 'big.js'), `const marker = 1;\n${'x'.repeat(3 * 1024 * 1024)}\n`);
   return repo;
 }
 
-test('quote checker never reads outside the repo, through a symlink, or a huge file', async () => {
+/** False where symlinks need Developer Mode or admin rights (Windows), so that case is skipped, not failed. */
+function link(target: string, path: string, type?: 'junction'): boolean {
+  try {
+    symlinkSync(target, path, type);
+    return true;
+  } catch (caught) {
+    if ((caught as { code?: string }).code === 'EPERM') return false;
+    throw caught;
+  }
+}
+
+const NO_LINKS = 'symlinks need Developer Mode or admin rights on Windows';
+
+test('quote checker never reads outside the repo or a huge file', async () => {
   const repo = fixture();
-  const files = ['routes/users.js', '../host.txt', 'link.txt', 'big.js'];
+  const files = ['routes/users.js', '../host.txt', 'big.js'];
   const check = await quoteChecker(repo, files);
   assert.equal(check('routes/users.js', 'const rows = await db.query(sql);'), true);
   assert.equal(check('routes/users.js', 'const rows = made.up();'), false);
   // A model-supplied path that climbs out of the repo cannot hold a quote from it.
   assert.equal(check('../host.txt', 'root:x:0:0:root:/root:/bin/bash'), false);
   // Files the code-context guard refuses are not read, so they are not checked.
-  assert.equal(check('link.txt', 'root:x:0:0:root:/root:/bin/bash'), null);
   assert.equal(check('big.js', 'const marker = 1;'), null);
+});
+
+test('quote checker never reads through a symlinked file', async (t) => {
+  const repo = fixture();
+  if (!link(join(repo, '..', 'host.txt'), join(repo, 'link.txt'))) return t.skip(NO_LINKS);
+  const check = await quoteChecker(repo, ['link.txt']);
+  assert.equal(check('link.txt', 'root:x:0:0:root:/root:/bin/bash'), null);
 });
 
 const CONFIG_JS = [
