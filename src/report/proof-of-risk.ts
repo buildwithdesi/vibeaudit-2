@@ -234,10 +234,16 @@ function afterPatch(
   const fixed = new Set(patch.rescan.resolved);
   const patched = [...new Set([...patch.rescan.resolved, ...patch.rescan.remaining])];
   const places = patch.selected.length;
+  // Closed as the loop counts it: a new flag reopens the work even when the old ones were judged closed.
+  const closedUp = patch.rescanClean || (patch.verifiedClean && patch.rescan.introduced === 0);
+  const blockers = [
+    ...(patch.tests.ran && patch.tests.passed ? [] : ['the tests did not run or did not pass']),
+    ...(patch.error ? ['the patch loop stopped early (see below)'] : []),
+  ];
   const result = patch.green
     ? "green, meaning every patched problem is gone or was judged closed, and the app's own tests pass"
-    : patch.rescanClean || patch.verifiedClean
-      ? 'closed, but not green because the tests did not run or did not pass'
+    : closedUp && blockers.length
+      ? `closed, but not green because ${blockers.join(' and ')}`
       : 'not green';
   const rescan = patch.rescan.ran
     ? `The scan ran again on the patched code: ${fixed.size} fixed, ${patch.rescan.remaining.length} still flagged by a rule, ${patch.rescan.introduced} new.`

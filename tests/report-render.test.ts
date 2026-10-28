@@ -326,6 +326,38 @@ test('a patch loop that stopped early says so even when the re-scan ran', () => 
   const text = render(manifest(), demoFindings(), reasoningRecord(DEMO_CLASSES), stopped);
   assert.ok(text.includes('The scan ran again on the patched code'));
   assert.ok(text.includes('the model API answered 402'), 'the stop reason is shown');
+  // The tests passed, so the headline must not blame them.
+  assert.ok(
+    text.includes(
+      "The app's own tests: passed (run on this computer, not in a sealed container). Result: closed, but not green because the patch loop stopped early (see below).",
+    ),
+    text.slice(text.indexOf('## After the patch')),
+  );
+  assert.ok(!text.includes('the tests did not run or did not pass'));
+});
+
+test('a patch that added a new flag is not called closed', () => {
+  const added: PatchRecordT = {
+    ...demoPatch(),
+    rescan: { ...demoPatch().rescan, introduced: 1 },
+    green: false,
+  };
+  const text = render(manifest(), demoFindings(), reasoningRecord(DEMO_CLASSES), added);
+  assert.ok(text.includes('2 still flagged by a rule, 1 new.'));
+  assert.ok(text.includes("The app's own tests: passed"));
+  assert.ok(text.includes('Result: not green.'), text.slice(text.indexOf('## After the patch')));
+});
+
+test('closed work whose tests failed says the tests are why', () => {
+  const failed: PatchRecordT = {
+    ...demoPatch(),
+    tests: { ...demoPatch().tests, passed: false },
+    green: false,
+  };
+  const text = render(manifest(), demoFindings(), reasoningRecord(DEMO_CLASSES), failed);
+  assert.ok(
+    text.includes('Result: closed, but not green because the tests did not run or did not pass.'),
+  );
 });
 
 test('a scan with no findings says so plainly, with no empty table', () => {
