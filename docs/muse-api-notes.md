@@ -1,4 +1,10 @@
-400. (https://dev.meta.ai/docs/protocols/chat-completions)
+# Meta Model API, Muse Code and open-weight triage: research notes
+
+Research from October 26, 2026, with sources inline (see `docs/build-log.md`). The opening of this file was lost before the first commit: it starts below partway through a note on structured output, and the notes before that are not in the repo. Apart from two redactions on October 28 (a local file path and a signed link, both in the hackathon rules section), the rest is as it was written.
+
+## Model API (opening lost)
+
+... 400. (https://dev.meta.ai/docs/protocols/chat-completions)
 
 - Structured output combines with `reasoning_effort`. The Reasoning page points to structured output as the way to constrain a reasoned answer. (https://dev.meta.ai/docs/structured-output)
 - The models page lists structured output for `muse-spark-1.3`, `muse-spark-1.3-contributor`, `muse-spark-1.2`, `muse-spark-1.2-contributor`, `muse-spark-1.1` and `muse-wonder-1.0`. (https://dev.meta.ai/docs/models) [medium]
@@ -386,9 +392,9 @@ muse exec --prompt-file task.txt --json --model muse-spark-1.3 --disable-request
 - A valid payment method is required before any Model API use. This is not a condition of entering. (https://cerebralvalley.ai/e/meta-ai-developer-hackathon/waiver)
 - Credits apply to any use permitted under the API Terms and AUP. No model restriction is stated. They are used before any other payment method. After they run out, usage bills the card at standard pricing. (https://cerebralvalley.ai/e/meta-ai-developer-hackathon/waiver)
 - Participation is free and credits are optional. You may build with Meta's open-weight models without a Model API account. Spending beyond credits never affects judging. (https://cerebralvalley.ai/e/meta-ai-developer-hackathon/waiver)
-- The Credit Terms supplement the Model API Terms and AUP, so AUP limits apply to any project calling the Model API. (https://scontent-lax3-2.xx.fbcdn.net/v/t39.8562-6/863382756_2547674092403265_4283663620107745955_n.pdf?_nc_cat=100&ccb=1-7&_nc_sid=e280be&_nc_ohc=EFQ5LeXZ-MUQ7kNvwHvDcx5&_nc_oc=AdoeGNY4W4j-EwTQuNla2mB6lsljXHjwGGXr5Sl9p-70H_2Zix2h-rRI806kbycsKf8AulDaNOnoXY4eA3am6iVp&_nc_zt=14&_nc_ht=scontent-lax3-2.xx&_nc_gid=Y7-1cX56vp36VWqQJwJLXg&_nc_ss=7b289&oh=00_AQNeUJ9hA6Oq7nguNZ2gEnMvXWJ22tvRUkRdV0U258IXOA&oe=6AE17F14)
+- The Credit Terms supplement the Model API Terms and AUP, so AUP limits apply to any project calling the Model API. (Credit Terms PDF linked from https://cerebralvalley.ai/e/meta-ai-developer-hackathon/waiver)
 - Implication for GitHub-URL intake: demo scans should target repos the builder owns or has permission to scan. (https://dev.meta.ai/legal/acceptable-use-policy) [inference]
-- The PDF link on the waiver page is signed and expires. A local text copy was saved at `C:/Users/ulilj/AppData/Local/Temp/claude/C--Users-ulilj-Digital-Alchemy-Vault-active-projects-vibeaudit-vibeaudit/36d60ac0-9564-490f-870a-cf3a94b99216/scratchpad/credit-terms/credit-terms.txt`. (https://cerebralvalley.ai/e/meta-ai-developer-hackathon/waiver)
+- The PDF link on the waiver page is signed and expires. A local text copy was saved outside the repo. (https://cerebralvalley.ai/e/meta-ai-developer-hackathon/waiver)
 - Partner credits are separate from the $150. They are for open-weights models on the partners' own platforms, for select participants. Baseten offers $100 plus 2M TPM. Modal offers $100. Fireworks offers $25 plus a workshop. (https://cerebralvalley.ai/e/meta-ai-developer-hackathon)
 
 ### IP, publicity and conduct

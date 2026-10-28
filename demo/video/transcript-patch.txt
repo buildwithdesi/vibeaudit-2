@@ -8,4 +8,4 @@ project tests: passed (local)
 verify routes/users.js:10 idor-vulnerability -> not-exploitable ($0.0223)
 verify routes/users.js:18 idor-vulnerability -> not-exploitable ($0.0177)
 patch loop GREEN: 4 resolved, 2 still flagged (2 judged closed on review), 0 introduced, tests passed, $0.0880
-patch record: C:\Users\ulilj\repos\vibeaudit-2\runs\20261028T011454Z-buildwithdesi-vibeaudit-2-demo-app-a578/patch.json (branch vibeaudit2/patch-20261028T011454Z-buildwithdesi-vibeaudit-2-demo-app-a578)
+patch record: C:\Users\<user>\repos\vibeaudit-2\runs\20261028T011454Z-buildwithdesi-vibeaudit-2-demo-app-a578/patch.json (branch vibeaudit2/patch-20261028T011454Z-buildwithdesi-vibeaudit-2-demo-app-a578)
