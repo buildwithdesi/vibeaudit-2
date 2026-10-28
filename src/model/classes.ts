@@ -225,9 +225,15 @@ export const VULN_CLASSES: readonly VulnClass[] = [
     id: 'supply-chain',
     name: 'Supply chain',
     plain:
-      'A dependency can run code at install time, is unpinned, or carries a license that blocks commercial use.',
+      'A dependency or setup step can run code you never reviewed, is unpinned or known to be unsafe, or carries a license that blocks commercial use.',
     demoRank: 13,
-    rules: ['unpinned-dependencies', 'install-script-dependency', 'license-contamination'],
+    rules: [
+      'unpinned-dependencies',
+      'install-script-dependency',
+      'license-contamination',
+      'known-vulnerable-versions',
+      'download-execution',
+    ],
   },
   {
     id: 'ai-safety',
@@ -235,7 +241,12 @@ export const VULN_CLASSES: readonly VulnClass[] = [
     plain:
       'Prompts or model outputs are trusted without checks, so a visitor can hijack the AI feature or run up the bill.',
     demoRank: 14,
-    rules: ['ai-prompt-injection', 'ai-response-trusted', 'ai-cost-exposure'],
+    rules: [
+      'ai-prompt-injection',
+      'ai-response-trusted',
+      'ai-cost-exposure',
+      'agent-control-injection',
+    ],
   },
   {
     id: 'accessibility',

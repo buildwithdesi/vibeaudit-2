@@ -12,18 +12,20 @@ Everything in this repository was written inside the hackathon window, which ope
 
 | Item | Where it lives | Proof of date |
 |---|---|---|
-| Vibe Audit v1, the deterministic scanner CLI, `@jackdog668/vibeaudit` | npm, version 1.4.0, published 2026-08-24. Source: https://github.com/buildwithdesi/vibeaudit | `npm view @jackdog668/vibeaudit time` and that repository's git history |
+| Vibe Audit v1, the deterministic scanner CLI, `@jackdog668/vibeaudit` | npm, version 1.5.0 (see the note below). Source: https://github.com/buildwithdesi/vibeaudit | `npm view @jackdog668/vibeaudit time` and that repository's git history |
 | The AI Tinkerers Chicago talk about v1 | Given before the window | Event listing |
 
 What v1 already does, so this submission does not claim it:
 
-- AST and pattern rules over a local folder. The live count comes from the engine, never from a document: `npx vibeaudit --list-rules` printed 104 rules on 2026-10-26 (47 critical, 54 warning, 3 info). The brief for this build said 39; that number was stale, so the pipeline records the live count in every run manifest instead.
+- AST and pattern rules over a local folder. The live count comes from the engine, never from a document: `npx vibeaudit --list-rules` printed 104 rules on 2026-10-26 with 1.4.0 and prints 107 with 1.5.0. The brief for this build said 39; that number was stale, so the pipeline records the live count in every run manifest instead.
 - A GitHub target mode (`github://owner/repo`) that reads files through the GitHub API, plus a shallow-clone helper.
 - Terminal, JSON, Markdown and HTML reports.
 - Static, per-rule fix prompts (`--fix`).
 - Dependency checks (npm audit, OSV), a package pre-install check, and the VibeGuard hook.
 
 v1 bugs found during the window get fixed upstream in the v1 repository. They are not part of this submission and are not demoed.
+
+The pinned engine moved from 1.4.0 (published 2026-08-24) to 1.5.0 (released 2026-10-28, inside the window). 1.5.0 is v1 work, not 2.0 work. Its features were written before the window: the `--trust-target-config` switch, the OSV and Gitleaks adapters, Agent Shield, VibeGuard, protected npm install, and the `known-vulnerable-versions` rule. Inside the window it gained two VibeGuard fixes on October 27 and, with the release itself, one bug fix found while building 2.0: the CLI called `process.exit()` before piped output was written, so a caller reading through a pipe could get a cut-off rule list or JSON report (v1 pull request #45). The recorded runs in `demo/` used 1.4.0; their manifests say so.
 
 ## New work (built October 26 to November 4, 2026)
 

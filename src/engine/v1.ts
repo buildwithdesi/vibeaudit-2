@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { access, readFile, rename } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { V1Output, type V1OutputT } from '../model/finding.ts';
@@ -84,21 +84,13 @@ export async function runEngineScan(
 ): Promise<EngineScanResult> {
   const args = [repoDir, '--format', 'json'];
   if (!options.sca) args.push('--skip-sca');
+  // Since engine 1.5.0 a scanned repo's own .vibe-audit.json and its inline
+  // "vibe-audit-ignore" comments apply only behind this flag, so an untrusted
+  // repo cannot hide its findings by default.
+  if (options.trustTargetConfig) args.push('--trust-target-config');
 
-  // Engine 1.4.0 always applies the scanned folder's own .vibe-audit.json.
-  // For an untrusted repo that is a way to hide findings, so the file is
-  // moved aside for the duration of the run unless the caller opts in.
-  // Inline "vibe-audit-ignore" comments are still honored by 1.4.0; that
-  // gap is recorded in the README until a v1 release adds a trust switch.
-  const hidden = options.trustTargetConfig ? null : await hideTargetConfig(repoDir);
   const started = performance.now();
-  let result: { stdout: string; stderr: string; exitCode: number };
-  try {
-    result = await runEngine(args, options.timeoutMs ?? 10 * 60_000);
-  } finally {
-    if (hidden) await rename(hidden.moved, hidden.original);
-  }
-  const { stdout, stderr, exitCode } = result;
+  const { stdout, stderr, exitCode } = await runEngine(args, options.timeoutMs ?? 10 * 60_000);
   const durationMs = Math.round(performance.now() - started);
 
   // Exit code 1 means "criticals found", which is a successful scan for us.
@@ -115,20 +107,6 @@ export async function runEngineScan(
   }
   const output = V1Output.parse(parsed);
   return { output, durationMs, exitCode };
-}
-
-async function hideTargetConfig(
-  repoDir: string,
-): Promise<{ original: string; moved: string } | null> {
-  const original = join(repoDir, '.vibe-audit.json');
-  try {
-    await access(original);
-  } catch {
-    return null;
-  }
-  const moved = join(repoDir, '.vibe-audit.json.untrusted');
-  await rename(original, moved);
-  return { original, moved };
 }
 
 function runEngine(

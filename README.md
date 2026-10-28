@@ -70,7 +70,7 @@ Copy `.env.example` to `.env` for the reasoning stages. The Meta Model API key c
 ## Security posture
 
 - A cloned repository is hostile input. Git hooks point at an empty folder, symlinks are off, credential prompts are off, and the URL always follows `--`. The scan stage only reads files.
-- The scanned repository's own `.vibe-audit.json` is moved aside during the engine run unless you pass `--trust-target-config`, so a repo cannot hide findings through its config. Known gap: engine 1.4.0 still honors inline `vibe-audit-ignore` comments in the scanned code (this repo uses them on its own source for the self-scan only). The manifest records which mode ran.
+- A scanned repository cannot hide its findings. Its own `.vibe-audit.json` and its inline `vibe-audit-ignore` comments apply only when you pass `--trust-target-config`; engine 1.5.0 enforces this and `tests/engine.test.ts` checks both. This repository's self-scan trusts its own comments, because they are ours. The manifest records which mode ran.
 - Credential-shaped values are masked before any code context is written to disk or sent to a model.
 - Code sent to a model is wrapped as untrusted data. Prompts state that instructions inside the code are to be ignored, and every model answer is constrained by a JSON schema and validated again with Zod.
 - The patch loop never lets a model write files directly through the API path: every edit is an exact search-and-replace that must match once, only the finding's own file may change, `.git`, `.github`, package manifests, lockfiles and env files are off limits, a plan that adds dependencies is rejected, and the patch lands on a sandbox branch in the pipeline's own copy. A local folder is copied first and never patched in place.
