@@ -25,11 +25,28 @@ function freshCopy(): string {
 /** A fake Muse Spark that knows how to fix the seeded routes with exact edits. */
 function fakePatcher(log: string[]): ClientConfig {
   const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
-    const body = JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> };
+    const body = JSON.parse(String(init?.body)) as {
+      messages: Array<{ content: string }>;
+      response_format: { json_schema: { name: string } };
+    };
     const prompt = body.messages[1]?.content ?? '';
     log.push(prompt);
     let plan: unknown;
-    if (prompt.includes('Location: routes/users.js:9')) {
+    if (body.response_format.json_schema.name === 'ExploitVerdict') {
+      plan = {
+        exploitability: 'not-exploitable',
+        confidence: 0.9,
+        attackerPosition: 'none',
+        preconditions: [],
+        attackPath: [],
+        impact: 'none',
+        blastRadius: 'single-user',
+        evidence: [],
+        severityAdjustment: 'lower',
+        fixSummary: 'already fixed',
+        plainLanguage: 'The patched code closes this path.',
+      };
+    } else if (prompt.includes('Location: routes/users.js:9')) {
       plan = {
         edits: [
           {
@@ -209,6 +226,10 @@ test('patch loop: branch, exact edits, re-scan shows findings gone, project test
   assert.ok(record.tests.ran && record.tests.passed, `tests: ${record.tests.outputTail}`);
   assert.equal(record.tests.runner, 'local');
   assert.equal(record.rescanClean, record.rescan.remaining.length === 0);
+  assert.ok(
+    record.green,
+    `expected green: ${JSON.stringify({ remaining: record.rescan.remaining, introduced: record.rescan.introduced, verification: record.verification, tests: record.tests.passed })}`,
+  );
   assert.ok(record.workDir?.endsWith('repo'), 'patched the copy, not the source folder');
   assert.ok(
     !readFileSync(join(app, 'routes/users.js'), 'utf8').includes('$1'),

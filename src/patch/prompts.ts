@@ -22,6 +22,8 @@ Rules:
 
 export interface PatchPromptInput {
   finding: FindingT;
+  /** Other rules that fired on the same line. One edit must close all of them. */
+  siblings?: readonly FindingT[];
   fileContent: string;
   relatedFiles: Array<{ file: string; code: string }>;
 }
@@ -34,6 +36,10 @@ export function buildPatchMessages(input: PatchPromptInput): ChatMessage[] {
     `Finding ${f.id}: ${f.ruleId} (${f.ruleName}), class ${f.vulnClass}, severity ${f.severity}`,
     `Location: ${inline(f.file)}${f.line ? `:${f.line}` : ''}`,
     `What the rule says: ${inline(f.message, 400)}`,
+    ...(input.siblings ?? []).map(
+      (s) =>
+        `Also flagged on the same line: ${s.ruleId} (${s.ruleName}). ${inline(s.message, 300)} Your edit must close this too.`,
+    ),
     r
       ? `Exploitability verdict: ${r.exploitability}. Attack path (from an earlier automated pass):\n${repoData('attack-path', clip(r.attackPath.join(' -> '), 800))}`
       : '',

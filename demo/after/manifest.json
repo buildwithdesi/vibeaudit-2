@@ -1,0 +1,58 @@
+{
+  "runId": "20261027T231844Z-buildwithdesi-vibeaudit-2-demo-app-4012",
+  "createdAt": "2026-10-27T23:18:47.724Z",
+  "tool": {
+    "name": "vibeaudit-2",
+    "version": "2.0.0-hackathon.1"
+  },
+  "target": {
+    "kind": "github",
+    "label": "buildwithdesi/vibeaudit-2-demo-app",
+    "url": "https://github.com/buildwithdesi/vibeaudit-2-demo-app",
+    "ref": null,
+    "path": "C:\\Users\\ulilj\\repos\\vibeaudit-2\\runs\\20261027T231844Z-buildwithdesi-vibeaudit-2-demo-app-4012\\repo"
+  },
+  "commit": "90357d5dbbab056bc5369d011b1ff2b6db66ee47",
+  "engine": {
+    "name": "@jackdog668/vibeaudit",
+    "version": "1.4.0",
+    "rulesAvailable": 104,
+    "rulesRun": 104,
+    "sca": false,
+    "trustTargetConfig": false
+  },
+  "filesScanned": 9,
+  "durationMs": {
+    "clone": 1764,
+    "engine": 829,
+    "total": 3438
+  },
+  "counts": {
+    "total": 16,
+    "bySeverity": {
+      "critical": 11,
+      "warning": 4,
+      "info": 1
+    },
+    "byClass": {
+      "path-traversal": 1,
+      "input-handling": 1,
+      "command-injection": 1,
+      "ssrf": 1,
+      "missing-auth": 2,
+      "sql-injection": 2,
+      "secrets": 3,
+      "hardening-config": 3,
+      "auth-sessions-crypto": 2
+    }
+  },
+  "stages": {
+    "intake": "done",
+    "engine": "done",
+    "normalize": "done",
+    "triage": "skipped",
+    "reasoning": "done",
+    "report": "done",
+    "patch": "done"
+  }
+}

@@ -1,0 +1,138 @@
+{
+  "runId": "20261027T231844Z-buildwithdesi-vibeaudit-2-demo-app-4012",
+  "startedAt": "2026-10-28T01:00:17.403Z",
+  "finishedAt": "2026-10-28T01:01:21.078Z",
+  "backend": "api",
+  "workDir": "C:\\Users\\ulilj\\repos\\vibeaudit-2\\runs\\20261027T231844Z-buildwithdesi-vibeaudit-2-demo-app-4012\\repo",
+  "branch": "vibeaudit2/patch-20261027T231844Z-buildwithdesi-vibeaudit-2-demo-app-4012",
+  "baseCommit": "90357d5dbbab056bc5369d011b1ff2b6db66ee47",
+  "patchCommit": "766db6a60f693417097b0b5ae17f83b81e447008",
+  "selected": [
+    {
+      "id": "b1a27c74d08e",
+      "file": "routes/files.js",
+      "ruleId": "path-traversal",
+      "vulnClass": "path-traversal"
+    },
+    {
+      "id": "bdf29f3d8fd8",
+      "file": "routes/network.js",
+      "ruleId": "command-injection",
+      "vulnClass": "command-injection"
+    },
+    {
+      "id": "1de4c3d328b7",
+      "file": "routes/users.js",
+      "ruleId": "idor-vulnerability",
+      "vulnClass": "missing-auth"
+    },
+    {
+      "id": "decddc992f2f",
+      "file": "routes/users.js",
+      "ruleId": "idor-vulnerability",
+      "vulnClass": "missing-auth"
+    }
+  ],
+  "outcomes": [
+    {
+      "findingIds": [
+        "b1a27c74d08e"
+      ],
+      "backend": "api",
+      "editsApplied": 1,
+      "editsRejected": 0,
+      "note": "Replaced unsafe join+sendFile with resolve plus inside-UPLOADS check returning 400/403 on bad input. Reviewer should verify legitimate nested filenames still resolve and that error handling matches app conventions.",
+      "usd": 0.007095
+    },
+    {
+      "findingIds": [
+        "bdf29f3d8fd8"
+      ],
+      "backend": "api",
+      "editsApplied": 2,
+      "editsRejected": 0,
+      "note": "Changed exec string interpolation to validated execFile argv so metacharacters are never interpreted. Reviewer should confirm no other callers rely on shell features or raw IPV6/IDN hosts rejected by the allowlist.",
+      "usd": 0.0068695
+    },
+    {
+      "findingIds": [
+        "1de4c3d328b7",
+        "d5a83231183a"
+      ],
+      "backend": "api",
+      "editsApplied": 1,
+      "editsRejected": 0,
+      "note": "Fixed GET /users/:id to require login, enforce self-only access, and use a bound parameter. Reviewer should confirm req.user.id is the app's auth identity and that db.query supports ? placeholders.",
+      "usd": 0.017046
+    },
+    {
+      "findingIds": [
+        "decddc992f2f",
+        "9f1550d64cf0"
+      ],
+      "backend": "api",
+      "editsApplied": 1,
+      "editsRejected": 0,
+      "note": "Added authentication and ownership/admin authorization to DELETE /users/:id and parameterized the SQL query. Reviewer should confirm the admin role field name (role === 'admin') matches the auth middleware and that req.user is populated for this router.",
+      "usd": 0.00648035
+    }
+  ],
+  "rejectedFiles": [],
+  "rescan": {
+    "ran": true,
+    "before": {
+      "total": 4,
+      "byClass": {
+        "path-traversal": 1,
+        "command-injection": 1,
+        "missing-auth": 2
+      }
+    },
+    "after": {
+      "total": 2,
+      "byClass": {
+        "missing-auth": 2
+      }
+    },
+    "resolved": [
+      "b1a27c74d08e",
+      "bdf29f3d8fd8",
+      "d5a83231183a",
+      "9f1550d64cf0"
+    ],
+    "remaining": [
+      "1de4c3d328b7",
+      "decddc992f2f"
+    ],
+    "introduced": 0
+  },
+  "tests": {
+    "ran": true,
+    "passed": true,
+    "runner": "local",
+    "command": "npm test",
+    "outputTail": "✔ database stand-in answers queries with rows (0.7463ms)\n✔ config exposes a host (0.1268ms)\nℹ tests 2\nℹ suites 0\nℹ pass 2\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 109.3728",
+    "durationMs": 3971
+  },
+  "verification": [
+    {
+      "findingId": "1de4c3d328b7",
+      "exploitability": "not-exploitable",
+      "confidence": 0.95,
+      "plainLanguage": "Someone who is logged in can now only see their own profile, and any request for someone else's details is blocked. Your users' private information stays private, so there is no extra risk from this page.",
+      "usd": 0.0142505
+    },
+    {
+      "findingId": "decddc992f2f",
+      "exploitability": "not-exploitable",
+      "confidence": 0.95,
+      "plainLanguage": "An outsider cannot delete another person's account because the system checks ownership before deleting. This means your customers are protected from having their accounts removed by someone else.",
+      "usd": 0.0226772
+    }
+  ],
+  "rescanClean": false,
+  "verifiedClean": true,
+  "green": true,
+  "error": null,
+  "usd": 0.0744
+}

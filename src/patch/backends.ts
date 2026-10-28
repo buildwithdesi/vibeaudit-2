@@ -34,6 +34,7 @@ export async function apiPatch(
   repoDir: string,
   finding: FindingT,
   rate: Rate,
+  siblings: readonly FindingT[] = [],
 ): Promise<PatchOutcome> {
   const root = resolve(repoDir);
   const abs = resolve(root, finding.file);
@@ -61,6 +62,7 @@ export async function apiPatch(
   // the uniqueness check instead of leaking the secret.
   const messages = buildPatchMessages({
     finding,
+    siblings,
     fileContent: redactSecrets(fileContent).text,
     relatedFiles: [],
   });
@@ -88,7 +90,8 @@ export async function apiPatch(
       };
     }
     const edits = await applyEdits(repoDir, plan.edits, { allowedFiles: [finding.file] });
-    return { findingIds: [finding.id], backend: 'api', plan, edits, note: plan.note, usd, usage };
+    const ids = [finding.id, ...siblings.map((s) => s.id)];
+    return { findingIds: ids, backend: 'api', plan, edits, note: plan.note, usd, usage };
   } catch (error) {
     if (error instanceof ModelApiError && error.usage) usage = error.usage;
     const usd = usage ? costUsd(usage, rate) : 0;

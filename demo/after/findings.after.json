@@ -1,0 +1,333 @@
+[
+  {
+    "id": "1d30296bcf76",
+    "ruleId": "ssrf-vulnerability",
+    "ruleName": "SSRF Vulnerability",
+    "severity": "critical",
+    "vulnClass": "ssrf",
+    "message": "Function \"<anonymous>\" fetches a user-provided URL without validation — SSRF risk.",
+    "file": "routes/preview.js",
+    "line": 8,
+    "evidence": "const upstream = await fetch(req.body.url);",
+    "fix": "Validate URL: parse with new URL(), verify protocol is https, block private IP ranges, optionally allowlist domains.",
+    "cweId": "CWE-918",
+    "cvssScore": 8.6,
+    "owaspCategory": "A10:2021",
+    "source": null,
+    "context": {
+      "startLine": 2,
+      "endLine": 12,
+      "code": "    2  import { Router } from 'express';\n    3  \n    4  export const previewRouter = Router();\n    5  \n    6  // The server fetches whatever URL the client sends, including internal ones.\n    7  previewRouter.post('/', async (req, res) => {\n    8    const upstream = await fetch(req.body.url);\n    9    const text = await upstream.text();\n   10    res.json({ status: upstream.status, length: text.length });\n   11  });\n   12  ",
+      "redacted": false
+    },
+    "triage": null,
+    "reasoning": null
+  },
+  {
+    "id": "9e76eca381c5",
+    "ruleId": "idor-vulnerability",
+    "ruleName": "IDOR Vulnerability",
+    "severity": "critical",
+    "vulnClass": "missing-auth",
+    "message": "Function \"<anonymous>\" uses a user-supplied ID without verifying ownership in the same function scope.",
+    "file": "routes/users.js",
+    "line": 12,
+    "evidence": "if (String(req.params.id) !== String(req.user.id)) {",
+    "fix": "After extracting the ID, verify ownership within the same function: \"if (resource.userId !== session.user.id) return 403\".",
+    "cweId": "CWE-639",
+    "cvssScore": 8.6,
+    "owaspCategory": "A01:2021",
+    "source": null,
+    "context": {
+      "startLine": 6,
+      "endLine": 18,
+      "code": "    6  \n    7  // Anyone can call this, and the id is pasted straight into the SQL text.\n    8  usersRouter.get('/:id', async (req, res) => {\n    9    if (!req.user) {\n   10      return res.status(401).json({ error: 'Unauthorized' });\n   11    }\n   12    if (String(req.params.id) !== String(req.user.id)) {\n   13      return res.status(403).json({ error: 'Forbidden' });\n   14    }\n   15    const rows = await db.query('SELECT * FROM users WHERE id = ?', [req.params.id]);\n   16    res.json(rows[0] ?? null);\n   17  });\n   18  ",
+      "redacted": false
+    },
+    "triage": null,
+    "reasoning": {
+      "exploitability": "not-exploitable",
+      "confidence": 0.95,
+      "attackerPosition": "none",
+      "preconditions": [],
+      "attackPath": [
+        "Attacker requests GET /users/victim-id which reaches the handler mounted at /users.",
+        "Handler returns 401 when req.user is missing and 403 when req.params.id does not match req.user.id.",
+        "Only matching-id requests reach the parameterized SELECT query."
+      ],
+      "impact": "No data is exposed; mismatched IDs are blocked with 403 before the database query, so another user's record cannot be read.",
+      "blastRadius": "single-user",
+      "evidence": [
+        {
+          "file": "server/index.js",
+          "line": 11,
+          "quote": "app.use('/users', usersRouter);"
+        },
+        {
+          "file": "routes/users.js",
+          "line": 8,
+          "quote": "usersRouter.get('/:id', async (req, res) => {"
+        },
+        {
+          "file": "routes/users.js",
+          "line": 9,
+          "quote": "if (!req.user) {"
+        },
+        {
+          "file": "routes/users.js",
+          "line": 12,
+          "quote": "if (String(req.params.id) !== String(req.user.id)) {"
+        },
+        {
+          "file": "routes/users.js",
+          "line": 13,
+          "quote": "return res.status(403).json({ error: 'Forbidden' });"
+        },
+        {
+          "file": "routes/users.js",
+          "line": 15,
+          "quote": "const rows = await db.query('SELECT * FROM users WHERE id = ?', [req.params.id]);"
+        }
+      ],
+      "severityAdjustment": "lower",
+      "fixSummary": "No further change needed; keep the 401 check and the String(req.params.id) !== String(req.user.id) ownership check before the query.",
+      "plainLanguage": "Someone who is logged in can now only see their own profile, and any request for someone else's details is blocked. Your users' private information stays private, so there is no extra risk from this page."
+    }
+  },
+  {
+    "id": "7afbfa072880",
+    "ruleId": "idor-vulnerability",
+    "ruleName": "IDOR Vulnerability",
+    "severity": "critical",
+    "vulnClass": "missing-auth",
+    "message": "Function \"<anonymous>\" uses a user-supplied ID without verifying ownership in the same function scope.",
+    "file": "routes/users.js",
+    "line": 23,
+    "evidence": "if (String(req.params.id) !== String(req.user.id) && req.user.role !== 'admin') {",
+    "fix": "After extracting the ID, verify ownership within the same function: \"if (resource.userId !== session.user.id) return 403\".",
+    "cweId": "CWE-639",
+    "cvssScore": 8.6,
+    "owaspCategory": "A01:2021",
+    "source": null,
+    "context": {
+      "startLine": 17,
+      "endLine": 29,
+      "code": "   17  });\n   18  \n   19  usersRouter.delete('/:id', async (req, res) => {\n   20    if (!req.user) {\n   21      return res.status(401).json({ error: 'Unauthorized' });\n   22    }\n   23    if (String(req.params.id) !== String(req.user.id) && req.user.role !== 'admin') {\n   24      return res.status(403).json({ error: 'Forbidden' });\n   25    }\n   26    await db.query('DELETE FROM users WHERE id = ?', [req.params.id]);\n   27    res.status(204).end();\n   28  });\n   29  ",
+      "redacted": false
+    },
+    "triage": null,
+    "reasoning": {
+      "exploitability": "not-exploitable",
+      "confidence": 0.95,
+      "attackerPosition": "authenticated-user",
+      "preconditions": [
+        "Request must have an authenticated user (req.user), otherwise it is rejected with 401."
+      ],
+      "attackPath": [
+        "Authenticated attacker sends DELETE /users/:id with another user's id.",
+        "Server compares the requested id to the caller's own id and admin role and rejects non-owners with 403.",
+        "Delete query runs only after that ownership check passes."
+      ],
+      "impact": "No unauthorized deletion occurs; non-owners are blocked with 403 and unauthenticated callers with 401.",
+      "blastRadius": "many-users",
+      "evidence": [
+        {
+          "file": "routes/users.js",
+          "line": 19,
+          "quote": "usersRouter.delete('/:id', async (req, res) => {"
+        },
+        {
+          "file": "routes/users.js",
+          "line": 20,
+          "quote": "if (!req.user) {\n      return res.status(401).json({ error: 'Unauthorized' });"
+        },
+        {
+          "file": "routes/users.js",
+          "line": 23,
+          "quote": "if (String(req.params.id) !== String(req.user.id) && req.user.role !== 'admin') {"
+        },
+        {
+          "file": "routes/users.js",
+          "line": 24,
+          "quote": "return res.status(403).json({ error: 'Forbidden' });"
+        },
+        {
+          "file": "routes/users.js",
+          "line": 26,
+          "quote": "await db.query('DELETE FROM users WHERE id = ?', [req.params.id]);"
+        }
+      ],
+      "severityAdjustment": "lower",
+      "fixSummary": "No change needed; retain the existing owner-or-admin check before the delete.",
+      "plainLanguage": "An outsider cannot delete another person's account because the system checks ownership before deleting. This means your customers are protected from having their accounts removed by someone else."
+    }
+  },
+  {
+    "id": "c9726bc2f595",
+    "ruleId": "exposed-secrets",
+    "ruleName": "Exposed Secrets",
+    "severity": "critical",
+    "vulnClass": "secrets",
+    "message": "Database URL with credentials found in source code.",
+    "file": "server/config.js",
+    "line": 8,
+    "evidence": "post...(redacted)...5432",
+    "fix": "Move this Database URL with credentials to an environment variable. Add the variable to .env (git-ignored) and reference it via process.env.YOUR_KEY_NAME. Never commit secrets to source control.",
+    "cweId": "CWE-798",
+    "cvssScore": 7.5,
+    "owaspCategory": "A07:2021",
+    "source": null,
+    "context": {
+      "startLine": 2,
+      "endLine": 10,
+      "code": "    2  // connects anywhere, but the pattern is exactly what shows up in vibe-coded\n    3  // repos: credentials typed straight into a config module.\n    4  export const database = {\n    5    host: 'db.internal',\n    6    user: 'app',\n    7    password: '[REDACTED:15]',\n    8    connectionString: 'postgres://app:[REDACTED]@db.internal:5432/app',\n    9  };\n   10  ",
+      "redacted": true
+    },
+    "triage": null,
+    "reasoning": null
+  },
+  {
+    "id": "e743415fb48d",
+    "ruleId": "hardcoded-credentials",
+    "ruleName": "Hardcoded Credentials",
+    "severity": "critical",
+    "vulnClass": "secrets",
+    "message": "Hardcoded password detected.",
+    "file": "server/config.js",
+    "line": 7,
+    "evidence": "***REDACTED***",
+    "fix": "Move credentials to environment variables. Use process.env or a secrets manager. Never store passwords or connection strings in source code.",
+    "cweId": "CWE-798",
+    "cvssScore": 7.5,
+    "owaspCategory": "A07:2021",
+    "source": null,
+    "context": {
+      "startLine": 1,
+      "endLine": 10,
+      "code": "    1  // Planted class: secrets in code. These values are fake and the app never\n    2  // connects anywhere, but the pattern is exactly what shows up in vibe-coded\n    3  // repos: credentials typed straight into a config module.\n    4  export const database = {\n    5    host: 'db.internal',\n    6    user: 'app',\n    7    password: '[REDACTED:15]',\n    8    connectionString: 'postgres://app:[REDACTED]@db.internal:5432/app',\n    9  };\n   10  ",
+      "redacted": true
+    },
+    "triage": null,
+    "reasoning": null
+  },
+  {
+    "id": "47ec89f3f439",
+    "ruleId": "hardcoded-credentials",
+    "ruleName": "Hardcoded Credentials",
+    "severity": "critical",
+    "vulnClass": "secrets",
+    "message": "Database connection string with credentials detected.",
+    "file": "server/config.js",
+    "line": 8,
+    "evidence": "postgres://app:[REDACTED]@db.internal:5432",
+    "fix": "Move credentials to environment variables. Use process.env or a secrets manager. Never store passwords or connection strings in source code.",
+    "cweId": "CWE-798",
+    "cvssScore": 7.5,
+    "owaspCategory": "A07:2021",
+    "source": null,
+    "context": {
+      "startLine": 2,
+      "endLine": 10,
+      "code": "    2  // connects anywhere, but the pattern is exactly what shows up in vibe-coded\n    3  // repos: credentials typed straight into a config module.\n    4  export const database = {\n    5    host: 'db.internal',\n    6    user: 'app',\n    7    password: '[REDACTED:15]',\n    8    connectionString: 'postgres://app:[REDACTED]@db.internal:5432/app',\n    9  };\n   10  ",
+      "redacted": true
+    },
+    "triage": null,
+    "reasoning": null
+  },
+  {
+    "id": "620206d4e586",
+    "ruleId": "missing-gitignore",
+    "ruleName": "Missing .gitignore Entries",
+    "severity": "warning",
+    "vulnClass": "hardening-config",
+    "message": "\".DS_Store\" (macOS metadata) is not in .gitignore.",
+    "file": ".gitignore",
+    "line": 1,
+    "evidence": "Missing: .DS_Store",
+    "fix": "Add \".DS_Store\" to your .gitignore to keep your repo clean and avoid accidentally committing unnecessary or sensitive files.",
+    "cweId": "CWE-538",
+    "cvssScore": 5.3,
+    "owaspCategory": "A05:2021",
+    "source": null,
+    "context": {
+      "startLine": 1,
+      "endLine": 5,
+      "code": "    1  node_modules/\n    2  .env\n    3  .env.*\n    4  *.log\n    5  ",
+      "redacted": false
+    },
+    "triage": null,
+    "reasoning": null
+  },
+  {
+    "id": "c71bfd2a3205",
+    "ruleId": "missing-csrf",
+    "ruleName": "Missing CSRF Protection",
+    "severity": "warning",
+    "vulnClass": "auth-sessions-crypto",
+    "message": "State-changing route with no CSRF protection",
+    "file": "routes/preview.js",
+    "line": 7,
+    "evidence": "previewRouter.post('/', async (req, res) => {",
+    "fix": "Add CSRF protection to state-changing endpoints. Options: (1) Use SameSite=Lax or Strict cookies. (2) Implement double-submit cookie pattern. (3) Check Origin/Referer headers. (4) Use a CSRF token library like csrf-csrf. Without CSRF protection, attackers can trigger actions on behalf of your users from external sites.",
+    "cweId": "CWE-352",
+    "cvssScore": 6.5,
+    "owaspCategory": "A01:2021",
+    "source": null,
+    "context": {
+      "startLine": 1,
+      "endLine": 12,
+      "code": "    1  // Planted class: server-side request forgery.\n    2  import { Router } from 'express';\n    3  \n    4  export const previewRouter = Router();\n    5  \n    6  // The server fetches whatever URL the client sends, including internal ones.\n    7  previewRouter.post('/', async (req, res) => {\n    8    const upstream = await fetch(req.body.url);\n    9    const text = await upstream.text();\n   10    res.json({ status: upstream.status, length: text.length });\n   11  });\n   12  ",
+      "redacted": false
+    },
+    "triage": null,
+    "reasoning": null
+  },
+  {
+    "id": "56e0fad41c09",
+    "ruleId": "missing-csrf",
+    "ruleName": "Missing CSRF Protection",
+    "severity": "warning",
+    "vulnClass": "auth-sessions-crypto",
+    "message": "State-changing route with no CSRF protection",
+    "file": "routes/users.js",
+    "line": 19,
+    "evidence": "usersRouter.delete('/:id', async (req, res) => {",
+    "fix": "Add CSRF protection to state-changing endpoints. Options: (1) Use SameSite=Lax or Strict cookies. (2) Implement double-submit cookie pattern. (3) Check Origin/Referer headers. (4) Use a CSRF token library like csrf-csrf. Without CSRF protection, attackers can trigger actions on behalf of your users from external sites.",
+    "cweId": "CWE-352",
+    "cvssScore": 6.5,
+    "owaspCategory": "A01:2021",
+    "source": null,
+    "context": {
+      "startLine": 13,
+      "endLine": 25,
+      "code": "   13      return res.status(403).json({ error: 'Forbidden' });\n   14    }\n   15    const rows = await db.query('SELECT * FROM users WHERE id = ?', [req.params.id]);\n   16    res.json(rows[0] ?? null);\n   17  });\n   18  \n   19  usersRouter.delete('/:id', async (req, res) => {\n   20    if (!req.user) {\n   21      return res.status(401).json({ error: 'Unauthorized' });\n   22    }\n   23    if (String(req.params.id) !== String(req.user.id) && req.user.role !== 'admin') {\n   24      return res.status(403).json({ error: 'Forbidden' });\n   25    }",
+      "redacted": false
+    },
+    "triage": null,
+    "reasoning": null
+  },
+  {
+    "id": "c645f9d63785",
+    "ruleId": "no-error-monitoring",
+    "ruleName": "No Error Monitoring",
+    "severity": "info",
+    "vulnClass": "hardening-config",
+    "message": "No error monitoring/alerting dependency found (Sentry, Rollbar, Bugsnag, Datadog…). Production errors will fail silently — you won't know the app is broken until a user tells you.",
+    "file": "package.json",
+    "line": 1,
+    "evidence": null,
+    "fix": "Add an error monitor: @sentry/nextjs (or @sentry/node), Rollbar, or Bugsnag — wire it to capture unhandled errors and alert you. If your host already provides this, treat this as informational.",
+    "cweId": null,
+    "cvssScore": null,
+    "owaspCategory": null,
+    "source": null,
+    "context": {
+      "startLine": 1,
+      "endLine": 7,
+      "code": "    1  {\n    2    \"name\": \"seeded-app\",\n    3    \"version\": \"0.1.0\",\n    4    \"private\": true,\n    5    \"description\": \"Intentionally vulnerable Express app used as the before state for Vibe Audit 2.0 demos.\",\n    6    \"type\": \"module\",\n    7    \"main\": \"server/index.js\",",
+      "redacted": false
+    },
+    "triage": null,
+    "reasoning": null
+  }
+]

@@ -151,15 +151,28 @@ export function render(
     lines.push('');
     const who = patch.backend === 'muse-code' ? 'Muse Code' : 'Muse Spark';
     const testsWord = patch.tests.ran ? (patch.tests.passed ? 'passed' : 'failed') : 'not run';
+    const closedOnReview = patch.verification.filter(
+      (v) => v.exploitability === 'not-exploitable' || v.exploitability === 'unlikely',
+    ).length;
     const result = patch.green
       ? 'green'
-      : patch.rescanClean
-        ? 're-scan clean, but not green because the tests did not run or did not pass'
+      : patch.rescanClean || patch.verifiedClean
+        ? 'closed, but not green because the tests did not run or did not pass'
         : 'not green';
     lines.push(
-      `${who} patched ${patch.selected.length} findings on branch \`${patch.branch}\`. The scan ran again on the patched code: ${patch.rescan.resolved.length} fixed, ${patch.rescan.remaining.length} still reported, ${patch.rescan.introduced} new. Project tests: ${testsWord}${patch.tests.ran ? ` (${patch.tests.runner})` : ''}. Result: ${result}.`,
+      `${who} patched ${patch.selected.length} findings on branch \`${patch.branch}\`. The scan ran again on the patched code: ${patch.rescan.resolved.length} fixed, ${patch.rescan.remaining.length} still flagged by a rule, ${patch.rescan.introduced} new. Project tests: ${testsWord}${patch.tests.ran ? ` (${patch.tests.runner})` : ''}. Result: ${result}.`,
     );
     lines.push('');
+    if (patch.verification.length) {
+      lines.push(
+        `The rules are pattern checks, so a fix they do not recognize keeps a flag. A reasoning model reviewed each still-flagged spot on the patched code: ${closedOnReview} of ${patch.verification.length} judged closed.`,
+      );
+      lines.push('');
+      for (const v of patch.verification) {
+        lines.push(`- ${VERDICT_WORDS[v.exploitability] ?? v.exploitability} ${v.plainLanguage}`);
+      }
+      lines.push('');
+    }
     lines.push('| Problem | Patched | Still reported |');
     lines.push('|---|---|---|');
     for (const [cls, before] of Object.entries(patch.rescan.before.byClass)) {

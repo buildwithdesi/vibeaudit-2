@@ -1,0 +1,267 @@
+{
+  "runId": "20261027T231844Z-buildwithdesi-vibeaudit-2-demo-app-4012",
+  "startedAt": "2026-10-28T00:52:52.195Z",
+  "finishedAt": "2026-10-28T00:54:52.082Z",
+  "dryRun": false,
+  "models": {
+    "reason": "muse-spark-1.3",
+    "triage": null
+  },
+  "classes": [
+    "secrets",
+    "sql-injection",
+    "missing-auth",
+    "command-injection",
+    "path-traversal"
+  ],
+  "repoMap": {
+    "summary": "Intentionally vulnerable Express demo app for Vibe Audit 2.0 before-state scans. Exposes user lookup/delete, ping, file download, and URL preview endpoints with planted flaws.",
+    "stack": [
+      "nodejs",
+      "express",
+      "postgres-stub"
+    ],
+    "entryPoints": [
+      {
+        "file": "routes/users.js",
+        "kind": "http-route",
+        "note": "GET /users/:id, DELETE /users/:id"
+      },
+      {
+        "file": "routes/network.js",
+        "kind": "http-route",
+        "note": "GET /network/ping?host="
+      },
+      {
+        "file": "routes/files.js",
+        "kind": "http-route",
+        "note": "GET /files/download?file="
+      },
+      {
+        "file": "routes/preview.js",
+        "kind": "http-route",
+        "note": "POST /preview fetches body.url"
+      },
+      {
+        "file": "server/index.js",
+        "kind": "other",
+        "note": "express bootstrap mounts 4 routers on 3000"
+      }
+    ],
+    "authBoundaries": [],
+    "dataStores": [
+      {
+        "name": "postgres stub (fake config)",
+        "accessedFrom": [
+          "routes/users.js",
+          "server/db.js"
+        ]
+      },
+      {
+        "name": "uploads directory",
+        "accessedFrom": [
+          "routes/files.js"
+        ]
+      }
+    ],
+    "trustZones": [
+      {
+        "zone": "public",
+        "files": [
+          "routes/users.js",
+          "routes/network.js",
+          "routes/files.js",
+          "routes/preview.js"
+        ]
+      },
+      {
+        "zone": "internal",
+        "files": [
+          "server/config.js",
+          "server/db.js",
+          "server/index.js"
+        ]
+      }
+    ],
+    "fileRoles": [
+      {
+        "file": "routes/files.js",
+        "role": "route"
+      },
+      {
+        "file": "routes/network.js",
+        "role": "route"
+      },
+      {
+        "file": "routes/preview.js",
+        "role": "route"
+      },
+      {
+        "file": "routes/users.js",
+        "role": "route"
+      },
+      {
+        "file": "server/config.js",
+        "role": "config"
+      },
+      {
+        "file": "server/db.js",
+        "role": "infra"
+      },
+      {
+        "file": "server/index.js",
+        "role": "infra"
+      },
+      {
+        "file": "tests/smoke.test.js",
+        "role": "test"
+      },
+      {
+        "file": "package.json",
+        "role": "config"
+      },
+      {
+        "file": ".gitignore",
+        "role": "config"
+      },
+      {
+        "file": ".gitattributes",
+        "role": "config"
+      },
+      {
+        "file": "README.md",
+        "role": "unknown"
+      }
+    ],
+    "notes": [
+      "No auth/session checks in any excerpt; comments say anyone can call",
+      "Only middleware seen is express.json(), no validation or sanitization",
+      "server/config.js secrets are fake and app never connects",
+      "Intentionally vulnerable demo, never deploy"
+    ]
+  },
+  "decisions": [
+    {
+      "findingId": "889ac2dcb553",
+      "file": "routes/network.js",
+      "outcome": "not-selected",
+      "note": "outside the selected classes or past --max-findings",
+      "usd": 0
+    },
+    {
+      "findingId": "1d30296bcf76",
+      "file": "routes/preview.js",
+      "outcome": "not-selected",
+      "note": "outside the selected classes or past --max-findings",
+      "usd": 0
+    },
+    {
+      "findingId": "620206d4e586",
+      "file": ".gitignore",
+      "outcome": "not-selected",
+      "note": "outside the selected classes or past --max-findings",
+      "usd": 0
+    },
+    {
+      "findingId": "c71bfd2a3205",
+      "file": "routes/preview.js",
+      "outcome": "not-selected",
+      "note": "outside the selected classes or past --max-findings",
+      "usd": 0
+    },
+    {
+      "findingId": "204c2119bbb0",
+      "file": "routes/users.js",
+      "outcome": "not-selected",
+      "note": "outside the selected classes or past --max-findings",
+      "usd": 0
+    },
+    {
+      "findingId": "131ec16094ed",
+      "file": "routes/users.js",
+      "outcome": "not-selected",
+      "note": "outside the selected classes or past --max-findings",
+      "usd": 0
+    },
+    {
+      "findingId": "c645f9d63785",
+      "file": "package.json",
+      "outcome": "not-selected",
+      "note": "outside the selected classes or past --max-findings",
+      "usd": 0
+    },
+    {
+      "findingId": "b1a27c74d08e",
+      "file": "routes/files.js",
+      "outcome": "reasoned",
+      "note": "confirmed (1)",
+      "usd": 0.01279875
+    },
+    {
+      "findingId": "bdf29f3d8fd8",
+      "file": "routes/network.js",
+      "outcome": "reasoned",
+      "note": "confirmed (1)",
+      "usd": 0.01509825
+    },
+    {
+      "findingId": "1de4c3d328b7",
+      "file": "routes/users.js",
+      "outcome": "reasoned",
+      "note": "confirmed (1)",
+      "usd": 0.017543
+    },
+    {
+      "findingId": "decddc992f2f",
+      "file": "routes/users.js",
+      "outcome": "reasoned",
+      "note": "confirmed (0.95)",
+      "usd": 0.01266675
+    },
+    {
+      "findingId": "d5a83231183a",
+      "file": "routes/users.js",
+      "outcome": "reasoned",
+      "note": "confirmed (0.95)",
+      "usd": 0.01439775
+    },
+    {
+      "findingId": "9f1550d64cf0",
+      "file": "routes/users.js",
+      "outcome": "reasoned",
+      "note": "confirmed (0.95)",
+      "usd": 0.01447225
+    },
+    {
+      "findingId": "c9726bc2f595",
+      "file": "server/config.js",
+      "outcome": "reasoned",
+      "note": "not-exploitable (0.92)",
+      "usd": 0.0232665
+    },
+    {
+      "findingId": "e743415fb48d",
+      "file": "server/config.js",
+      "outcome": "reasoned",
+      "note": "not-exploitable (0.95)",
+      "usd": 0.0220436
+    },
+    {
+      "findingId": "47ec89f3f439",
+      "file": "server/config.js",
+      "outcome": "reasoned",
+      "note": "not-exploitable (0.9)",
+      "usd": 0.026535
+    }
+  ],
+  "calls": 10,
+  "usage": {
+    "promptTokens": 15693,
+    "cachedTokens": 1009,
+    "completionTokens": 35838,
+    "reasoningTokens": 32126
+  },
+  "usd": 0.1708,
+  "estimatedUsd": 0,
+  "aborted": null
+}

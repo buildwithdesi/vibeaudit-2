@@ -6,7 +6,11 @@ import { runEngineScan } from '../engine/v1.ts';
 import { Finding, type FindingT, RunManifest } from '../model/finding.ts';
 import { countBy, normalizeFindings } from '../normalize/index.ts';
 import { ReasoningBudget, rateFor } from '../reason/budget.ts';
+import { listFiles, relatedSnippets } from '../reason/context.ts';
 import type { ClientConfig } from '../reason/meta-client.ts';
+import { completeStructured } from '../reason/meta-client.ts';
+import { buildExploitabilityMessages } from '../reason/prompts/exploitability.ts';
+import { ExploitVerdict } from '../reason/schemas.ts';
 import { topClasses } from '../report/summary.ts';
 import { writeJson, writeText } from '../util/fs.ts';
 import { info, warn } from '../util/log.ts';
@@ -94,7 +98,19 @@ export const PatchRecord = z.object({
     outputTail: z.string(),
     durationMs: z.number(),
   }),
+  /** Findings the scanner still flags after the patch, re-judged on the patched code. */
+  verification: z.array(
+    z.object({
+      findingId: z.string(),
+      exploitability: z.string(),
+      confidence: z.number(),
+      plainLanguage: z.string(),
+      usd: z.number(),
+    }),
+  ),
   rescanClean: z.boolean(),
+  /** Every remaining finding was judged closed on the patched code. */
+  verifiedClean: z.boolean(),
   green: z.boolean(),
   error: z.string().nullable(),
   usd: z.number(),
@@ -174,7 +190,8 @@ export async function runPatchLoop(runDir: string, options: PatchOptions): Promi
             });
             continue;
           }
-          const outcome = await apiPatch(options.client, workDir, finding, rate); // vibe-audit-ignore perf-no-await-parallel
+          const siblings = siblingsOf(finding, pool);
+          const outcome = await apiPatch(options.client, workDir, finding, rate, siblings); // vibe-audit-ignore perf-no-await-parallel
           if (outcome.usage) budget.record(finding.file, outcome.usage, rate);
           outcomes.push(outcome);
           const applied = outcome.edits.filter((e) => e.applied).length;
@@ -249,13 +266,67 @@ export async function runPatchLoop(runDir: string, options: PatchOptions): Promi
   }
 
   // Compare through the diff's line map, never by raw line number.
-  const selectedIds = new Set(selected.map((f) => f.id));
+  const selectedIds = new Set(
+    selected.flatMap((f) => [f, ...siblingsOf(f, pool)]).map((f) => f.id),
+  );
   const comparison = afterFindings
     ? compareScans(findings, afterFindings, selectedIds, lineMap)
-    : { resolved: [], remaining: selected.map((f) => f.id), introduced: 0 };
+    : { resolved: [], remaining: selected.map((f) => f.id), remainingPairs: [], introduced: 0 };
   const { resolved, remaining, introduced } = comparison;
+
+  // A rule is a heuristic. When it still fires on patched code, the reasoning
+  // model re-judges that exact spot with the patch in view. The scanner's
+  // verdict and the model's verdict are both recorded, never merged.
+  const verification: PatchRecordT['verification'] = [];
+  if (!options.dryRun && workDir && options.client && rate && comparison.remainingPairs.length) {
+    const files = await listFiles(workDir);
+    for (const { beforeId, after } of comparison.remainingPairs) {
+      const decision = budget.canSpend(after.file, 6_000, rate);
+      if (!decision.ok) break;
+      try {
+        const related = await relatedSnippets(workDir, after, files, null); // vibe-audit-ignore perf-no-await-parallel
+        const messages = buildExploitabilityMessages({
+          finding: after,
+          repoMap: null,
+          relatedSnippets: related,
+          triageNote: 'This code was just patched. Judge the patched version only.',
+        });
+        const request = {
+          messages,
+          schema: ExploitVerdict,
+          schemaName: 'ExploitVerdict',
+          reasoningEffort: 'high' as const,
+          maxOutputTokens: 16_000,
+        };
+        const result = await completeStructured(options.client, request); // vibe-audit-ignore perf-no-await-parallel
+        const usd = budget.record(after.file, result.usage, rate);
+        after.reasoning = result.data;
+        verification.push({
+          findingId: beforeId,
+          exploitability: result.data.exploitability,
+          confidence: result.data.confidence,
+          plainLanguage: result.data.plainLanguage,
+          usd,
+        });
+        info(
+          `verify ${after.file}:${after.line ?? '?'} ${after.ruleId} -> ${result.data.exploitability} ($${usd.toFixed(4)})`,
+        );
+      } catch (caught) {
+        warn(`verification failed for ${beforeId}: ${(caught as Error).message}`);
+      }
+    }
+    if (afterFindings) await writeJson(join(runDir, 'findings.after.json'), afterFindings);
+  }
+  const verifiedClean =
+    remaining.length > 0 &&
+    verification.length === remaining.length &&
+    verification.every(
+      (v) => v.exploitability === 'not-exploitable' || v.exploitability === 'unlikely',
+    );
   const rescanClean = afterFindings !== null && remaining.length === 0 && introduced === 0;
-  const green = rescanClean && tests.ran && tests.passed && error === null;
+  const closed =
+    afterFindings !== null && introduced === 0 && (remaining.length === 0 || verifiedClean);
+  const green = closed && tests.ran && tests.passed && error === null;
 
   const record: PatchRecordT = {
     runId: manifest.runId,
@@ -296,10 +367,16 @@ export async function runPatchLoop(runDir: string, options: PatchOptions): Promi
       introduced,
     },
     tests,
+    verification,
     rescanClean,
+    verifiedClean,
     green,
     error,
-    usd: Number(outcomes.reduce((n, o) => n + o.usd, 0).toFixed(4)),
+    usd: Number(
+      (
+        outcomes.reduce((n, o) => n + o.usd, 0) + verification.reduce((n, v) => n + v.usd, 0)
+      ).toFixed(4),
+    ),
   };
   await writeJson(join(runDir, 'patch.json'), record);
   await writeJson(join(runDir, 'manifest.json'), {
@@ -312,7 +389,7 @@ export async function runPatchLoop(runDir: string, options: PatchOptions): Promi
   info(
     options.dryRun
       ? `dry run: ${selected.length} findings would be patched with the ${backend} backend`
-      : `patch loop ${green ? 'GREEN' : rescanClean ? 'RE-SCAN CLEAN, tests not run or failed' : 'NOT GREEN'}: ${resolved.length} resolved, ${remaining.length} remaining, ${introduced} introduced, tests ${tests.ran ? (tests.passed ? 'passed' : 'failed') : 'not run'}, $${record.usd.toFixed(4)}`,
+      : `patch loop ${green ? 'GREEN' : closed ? 'CLOSED, tests not run or failed' : 'NOT GREEN'}: ${resolved.length} resolved, ${remaining.length} still flagged${verification.length ? ` (${verification.filter((v) => v.exploitability === 'not-exploitable' || v.exploitability === 'unlikely').length} judged closed on review)` : ''}, ${introduced} introduced, tests ${tests.ran ? (tests.passed ? 'passed' : 'failed') : 'not run'}, $${record.usd.toFixed(4)}`,
   );
   return record;
 }
@@ -340,17 +417,24 @@ function resolveBackend(options: PatchOptions): 'api' | 'muse-code' | 'none' {
   return options.client ? 'api' : 'none';
 }
 
-/** Several rules often flag one line. One patch per location is enough. */
+/**
+ * Several rules often flag one line. One patch per location is enough, but
+ * the patcher must know every rule that fired there so one edit closes all
+ * of them. The first finding leads; the rest ride along as siblings.
+ */
 function dedupeByLocation(findings: readonly FindingT[]): FindingT[] {
-  const seen = new Set<string>();
-  const out: FindingT[] = [];
+  const byKey = new Map<string, FindingT>();
   for (const f of findings) {
     const key = `${f.file}:${f.line ?? 0}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(f);
+    if (!byKey.has(key)) byKey.set(key, f);
   }
-  return out;
+  return [...byKey.values()];
+}
+
+function siblingsOf(lead: FindingT, pool: readonly FindingT[]): FindingT[] {
+  return pool.filter(
+    (f) => f !== lead && f.file === lead.file && (f.line ?? 0) === (lead.line ?? 0),
+  );
 }
 
 /** Put a file back to its committed state; a brand-new file is removed instead. */

@@ -1,0 +1,76 @@
+diff --git a/routes/files.js b/routes/files.js
+index c08f6de..f07bdd6 100644
+--- a/routes/files.js
++++ b/routes/files.js
+@@ -5,7 +5,14 @@ import { Router } from 'express';
+ export const filesRouter = Router();
+ const UPLOADS = path.join(process.cwd(), 'uploads');
+ 
+-// "../../etc/passwd" walks right out of the uploads folder.
+ filesRouter.get('/download', (req, res) => {
+-  res.sendFile(path.join(UPLOADS, req.query.file));
++  const requested = Array.isArray(req.query.file) ? req.query.file[0] : req.query.file;
++  if (typeof requested !== 'string' || requested.length === 0) {
++    return res.status(400).end();
++  }
++  const resolved = path.resolve(UPLOADS, requested);
++  if (resolved !== UPLOADS && !resolved.startsWith(UPLOADS + path.sep)) {
++    return res.status(403).end();
++  }
++  res.sendFile(resolved);
+ });
+diff --git a/routes/network.js b/routes/network.js
+index be9b4ff..02a15de 100644
+--- a/routes/network.js
++++ b/routes/network.js
+@@ -1,12 +1,16 @@
+ // Planted class: command injection.
+-import { exec } from 'node:child_process';
++import { execFile } from 'node:child_process';
+ import { Router } from 'express';
+ 
+ export const networkRouter = Router();
+ 
+-// The host comes from the query string and lands inside a shell command.
++// The host comes from the query string and is passed as an argument without a shell.
+ networkRouter.get('/ping', (req, res) => {
+-  exec(`ping -c 1 ${req.query.host}`, (error, stdout) => {
++  const host = req.query.host;
++  if (typeof host !== 'string' || !/^(?!-)[A-Za-z0-9.-]{1,253}$/.test(host)) {
++    return res.status(400).send('Invalid host');
++  }
++  execFile('ping', ['-c', '1', host], (error, stdout) => {
+     if (error) return res.status(500).send(error.message);
+     res.type('text').send(stdout);
+   });
+diff --git a/routes/users.js b/routes/users.js
+index e97cdad..77b8e4e 100644
+--- a/routes/users.js
++++ b/routes/users.js
+@@ -6,12 +6,23 @@ export const usersRouter = Router();
+ 
+ // Anyone can call this, and the id is pasted straight into the SQL text.
+ usersRouter.get('/:id', async (req, res) => {
+-  const rows = await db.query(`SELECT * FROM users WHERE id = ${req.params.id}`);
++  if (!req.user) {
++    return res.status(401).json({ error: 'Unauthorized' });
++  }
++  if (String(req.params.id) !== String(req.user.id)) {
++    return res.status(403).json({ error: 'Forbidden' });
++  }
++  const rows = await db.query('SELECT * FROM users WHERE id = ?', [req.params.id]);
+   res.json(rows[0] ?? null);
+ });
+ 
+-// Anyone can delete any account. No check on who is asking.
+ usersRouter.delete('/:id', async (req, res) => {
+-  await db.query('DELETE FROM users WHERE id = ' + req.params.id);
++  if (!req.user) {
++    return res.status(401).json({ error: 'Unauthorized' });
++  }
++  if (String(req.params.id) !== String(req.user.id) && req.user.role !== 'admin') {
++    return res.status(403).json({ error: 'Forbidden' });
++  }
++  await db.query('DELETE FROM users WHERE id = ?', [req.params.id]);
+   res.status(204).end();
+ });

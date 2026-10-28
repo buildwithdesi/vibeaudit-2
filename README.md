@@ -22,9 +22,9 @@ GitHub URL or folder
 | Stage | Status |
 |---|---|
 | 1 to 3 | Built. Tested on the seeded app and on OWASP NodeGoat. |
-| 4 to 5 | Built. `reason <run>` with a dry-run mode; tested against a fake endpoint. Live call status is in CONTRIBUTIONS.md. |
+| 4 to 5 | Built and run live. Muse Spark judged the demo app: 9 verdicts, 10 calls, $0.17. See `demo/after/report.md`. |
 | 6 | Built. `report <run>` writes `report.md`. |
-| 7 | Built. `patch <run>` with Muse Spark or Muse Code backends; green on the seeded app against a fake endpoint. |
+| 7 | Built and green live with the Muse Spark backend on the demo repo: 4 patched, tests passed, $0.07. Muse Code backend wired, not yet run here. |
 
 ## Meta tooling in this repo
 
@@ -54,6 +54,14 @@ node src/cli.ts rules
 ```
 
 Demo target: https://github.com/buildwithdesi/vibeaudit-2-demo-app. Recorded before and after runs live in `demo/`.
+
+One live verdict from `demo/after/report.md`, unedited:
+
+> **Verdict:** Confirmed. The full path is visible in the code. Confidence 95%.
+> **Who can do this:** anyone on the internet, no account needed.
+> **What could happen:** Anyone on the internet can ask for one user account and trick the system into showing private details for many other accounts. Losing control of customer details like this can break trust and create legal and money problems for the business.
+
+And the patch loop on the same repo: 4 findings patched by Muse Spark, re-scan clean except 2 rule flags the model re-judged closed on the patched code, project tests passed, green, 7 cents.
 
 Each scan writes `runs/<run id>/` with the clone, `engine-output.json`, `findings.json`, `manifest.json` and `summary.md`. The `runs/` folder is never committed.
 

@@ -1,0 +1,727 @@
+[
+  {
+    "id": "b1a27c74d08e",
+    "ruleId": "path-traversal",
+    "ruleName": "Path Traversal",
+    "severity": "critical",
+    "vulnClass": "path-traversal",
+    "message": "Function \"<anonymous>\" uses user input in a file system operation without path sanitization.",
+    "file": "routes/files.js",
+    "line": 10,
+    "evidence": "res.sendFile(path.join(UPLOADS, req.query.file));",
+    "fix": "Use path.basename() to strip directory components, then verify: \"if (!resolved.startsWith(ALLOWED_DIR)) return 403\".",
+    "cweId": "CWE-22",
+    "cvssScore": 8.6,
+    "owaspCategory": "A01:2021",
+    "source": null,
+    "context": {
+      "startLine": 4,
+      "endLine": 12,
+      "code": "    4  \n    5  export const filesRouter = Router();\n    6  const UPLOADS = path.join(process.cwd(), 'uploads');\n    7  \n    8  // \"../../etc/passwd\" walks right out of the uploads folder.\n    9  filesRouter.get('/download', (req, res) => {\n   10    res.sendFile(path.join(UPLOADS, req.query.file));\n   11  });\n   12  ",
+      "redacted": false
+    },
+    "triage": null,
+    "reasoning": {
+      "exploitability": "confirmed",
+      "confidence": 1,
+      "attackerPosition": "anonymous-internet",
+      "preconditions": [],
+      "attackPath": [
+        "Attacker sends GET /files/download with file set to a traversal payload such as ../../etc/passwd.",
+        "Handler joins attacker-controlled req.query.file onto UPLOADS with no sanitization or allowlist.",
+        "Express returns the file at the escaped path via res.sendFile."
+      ],
+      "impact": "Attacker can read arbitrary files the server process can access outside the uploads directory, including system files and secrets.",
+      "blastRadius": "whole-system",
+      "evidence": [
+        {
+          "file": "server/index.js",
+          "line": 14,
+          "quote": "app.use('/files', filesRouter);"
+        },
+        {
+          "file": "routes/files.js",
+          "line": 9,
+          "quote": "filesRouter.get('/download', (req, res) => {"
+        },
+        {
+          "file": "routes/files.js",
+          "line": 6,
+          "quote": "const UPLOADS = path.join(process.cwd(), 'uploads');"
+        },
+        {
+          "file": "routes/files.js",
+          "line": 10,
+          "quote": "res.sendFile(path.join(UPLOADS, req.query.file));"
+        }
+      ],
+      "severityAdjustment": "keep",
+      "fixSummary": "Resolve the joined path and reject unless it stays inside UPLOADS, or only allow known filenames via path.basename allowlist.",
+      "plainLanguage": "Anyone on the internet can trick the download link to read private files from your server. This matters because leaked secrets and user files could be used to break in further and harm your users."
+    }
+  },
+  {
+    "id": "889ac2dcb553",
+    "ruleId": "no-input-validation",
+    "ruleName": "No Input Validation",
+    "severity": "critical",
+    "vulnClass": "input-handling",
+    "message": "Shell command with user input — command injection risk",
+    "file": "routes/network.js",
+    "line": 9,
+    "evidence": "exec(`ping -c 1 ${req.query.host}`, (error, stdout) => {",
+    "fix": "Sanitize all user input before use. For HTML: use a sanitization library or textContent instead of innerHTML. For SQL: use parameterized queries. For shell: use allowlists, never interpolate user input into commands.",
+    "cweId": "CWE-20",
+    "cvssScore": 8.6,
+    "owaspCategory": "A03:2021",
+    "source": null,
+    "context": {
+      "startLine": 3,
+      "endLine": 14,
+      "code": "    3  import { Router } from 'express';\n    4  \n    5  export const networkRouter = Router();\n    6  \n    7  // The host comes from the query string and lands inside a shell command.\n    8  networkRouter.get('/ping', (req, res) => {\n    9    exec(`ping -c 1 ${req.query.host}`, (error, stdout) => {\n   10      if (error) return res.status(500).send(error.message);\n   11      res.type('text').send(stdout);\n   12    });\n   13  });\n   14  ",
+      "redacted": false
+    },
+    "triage": null,
+    "reasoning": null
+  },
+  {
+    "id": "bdf29f3d8fd8",
+    "ruleId": "command-injection",
+    "ruleName": "OS Command Injection",
+    "severity": "critical",
+    "vulnClass": "command-injection",
+    "message": "exec() runs a shell command built from interpolated input — if any of it is user-controlled, that's remote code execution (a \"; rm -rf\" away).",
+    "file": "routes/network.js",
+    "line": 9,
+    "evidence": "exec(`ping -c 1 ${req.query.host}`, (error, stdout) => {",
+    "fix": "Never build a shell command from input. Use execFile()/spawn() with the program and an ARGUMENT ARRAY (no `shell: true`) so args can't break out: `execFile(\"convert\", [userFile, out])`. If a value must reach a shell, strictly allowlist it.",
+    "cweId": "CWE-78",
+    "cvssScore": 9.8,
+    "owaspCategory": "A03:2021",
+    "source": null,
+    "context": {
+      "startLine": 3,
+      "endLine": 14,
+      "code": "    3  import { Router } from 'express';\n    4  \n    5  export const networkRouter = Router();\n    6  \n    7  // The host comes from the query string and lands inside a shell command.\n    8  networkRouter.get('/ping', (req, res) => {\n    9    exec(`ping -c 1 ${req.query.host}`, (error, stdout) => {\n   10      if (error) return res.status(500).send(error.message);\n   11      res.type('text').send(stdout);\n   12    });\n   13  });\n   14  ",
+      "redacted": false
+    },
+    "triage": null,
+    "reasoning": {
+      "exploitability": "confirmed",
+      "confidence": 1,
+      "attackerPosition": "anonymous-internet",
+      "preconditions": [],
+      "attackPath": [
+        "Attacker sends unauthenticated GET request to /network/ping with a hostile host query value containing shell metacharacters.",
+        "Server handler interpolates req.query.host directly into a shell command string with no validation or escaping.",
+        "exec() runs the combined string in a system shell, executing the attacker's injected commands with server privileges."
+      ],
+      "impact": "Attacker gets remote code execution on the server as the Node.js user, allowing reading or changing app data and running arbitrary system commands.",
+      "blastRadius": "whole-system",
+      "evidence": [
+        {
+          "file": "server/index.js",
+          "line": 13,
+          "quote": "app.use('/network', networkRouter);"
+        },
+        {
+          "file": "routes/network.js",
+          "line": 8,
+          "quote": "networkRouter.get('/ping', (req, res) => {"
+        },
+        {
+          "file": "routes/network.js",
+          "line": 9,
+          "quote": "exec(`ping -c 1 ${req.query.host}`, (error, stdout) => {"
+        }
+      ],
+      "severityAdjustment": "keep",
+      "fixSummary": "Replace exec() with execFile('ping', ['-c','1', host]) so host is passed as an argument without a shell, and validate host as IP or hostname.",
+      "plainLanguage": "Anyone on the internet can send a crafted web address to this ping feature and make the server run their own commands. That matters because they could steal information, break the service, or take over the computer running your app."
+    }
+  },
+  {
+    "id": "1d30296bcf76",
+    "ruleId": "ssrf-vulnerability",
+    "ruleName": "SSRF Vulnerability",
+    "severity": "critical",
+    "vulnClass": "ssrf",
+    "message": "Function \"<anonymous>\" fetches a user-provided URL without validation — SSRF risk.",
+    "file": "routes/preview.js",
+    "line": 8,
+    "evidence": "const upstream = await fetch(req.body.url);",
+    "fix": "Validate URL: parse with new URL(), verify protocol is https, block private IP ranges, optionally allowlist domains.",
+    "cweId": "CWE-918",
+    "cvssScore": 8.6,
+    "owaspCategory": "A10:2021",
+    "source": null,
+    "context": {
+      "startLine": 2,
+      "endLine": 12,
+      "code": "    2  import { Router } from 'express';\n    3  \n    4  export const previewRouter = Router();\n    5  \n    6  // The server fetches whatever URL the client sends, including internal ones.\n    7  previewRouter.post('/', async (req, res) => {\n    8    const upstream = await fetch(req.body.url);\n    9    const text = await upstream.text();\n   10    res.json({ status: upstream.status, length: text.length });\n   11  });\n   12  ",
+      "redacted": false
+    },
+    "triage": null,
+    "reasoning": null
+  },
+  {
+    "id": "1de4c3d328b7",
+    "ruleId": "idor-vulnerability",
+    "ruleName": "IDOR Vulnerability",
+    "severity": "critical",
+    "vulnClass": "missing-auth",
+    "message": "Function \"<anonymous>\" uses a user-supplied ID without verifying ownership in the same function scope.",
+    "file": "routes/users.js",
+    "line": 9,
+    "evidence": "const rows = await db.query(`SELECT * FROM users WHERE id = ${req.params.id}`);",
+    "fix": "After extracting the ID, verify ownership within the same function: \"if (resource.userId !== session.user.id) return 403\".",
+    "cweId": "CWE-639",
+    "cvssScore": 8.6,
+    "owaspCategory": "A01:2021",
+    "source": null,
+    "context": {
+      "startLine": 3,
+      "endLine": 15,
+      "code": "    3  import { db } from '../server/db.js';\n    4  \n    5  export const usersRouter = Router();\n    6  \n    7  // Anyone can call this, and the id is pasted straight into the SQL text.\n    8  usersRouter.get('/:id', async (req, res) => {\n    9    const rows = await db.query(`SELECT * FROM users WHERE id = ${req.params.id}`);\n   10    res.json(rows[0] ?? null);\n   11  });\n   12  \n   13  // Anyone can delete any account. No check on who is asking.\n   14  usersRouter.delete('/:id', async (req, res) => {\n   15    await db.query('DELETE FROM users WHERE id = ' + req.params.id);",
+      "redacted": false
+    },
+    "triage": null,
+    "reasoning": {
+      "exploitability": "confirmed",
+      "confidence": 1,
+      "attackerPosition": "anonymous-internet",
+      "preconditions": [],
+      "attackPath": [
+        "Attacker sends an unauthenticated GET request to /users/2 to request another user's record.",
+        "Server uses the request id value directly in the database lookup without checking who owns it.",
+        "Server returns the other user's database row as JSON to the attacker."
+      ],
+      "impact": "Attacker can read any user's stored record by changing the id in the URL.",
+      "blastRadius": "many-users",
+      "evidence": [
+        {
+          "file": "routes/users.js",
+          "line": 7,
+          "quote": "// Anyone can call this, and the id is pasted straight into the SQL text."
+        },
+        {
+          "file": "routes/users.js",
+          "line": 8,
+          "quote": "usersRouter.get('/:id', async (req, res) => {"
+        },
+        {
+          "file": "routes/users.js",
+          "line": 9,
+          "quote": "const rows = await db.query(`SELECT * FROM users WHERE id = ${req.params.id}`);"
+        },
+        {
+          "file": "routes/users.js",
+          "line": 10,
+          "quote": "res.json(rows[0] ?? null);"
+        },
+        {
+          "file": "server/index.js",
+          "line": null,
+          "quote": "app.use('/users', usersRouter);"
+        },
+        {
+          "file": "server/index.js",
+          "line": null,
+          "quote": "app.use(express.json());"
+        }
+      ],
+      "severityAdjustment": "keep",
+      "fixSummary": "Require login and verify the requested id belongs to the logged-in user before querying, rejecting other ids with forbidden.",
+      "plainLanguage": "Anyone can change the number in the profile address to see another person's private account information. This loss of privacy can drive customers away and create legal costs for the business."
+    }
+  },
+  {
+    "id": "decddc992f2f",
+    "ruleId": "idor-vulnerability",
+    "ruleName": "IDOR Vulnerability",
+    "severity": "critical",
+    "vulnClass": "missing-auth",
+    "message": "Function \"<anonymous>\" uses a user-supplied ID without verifying ownership in the same function scope.",
+    "file": "routes/users.js",
+    "line": 15,
+    "evidence": "await db.query('DELETE FROM users WHERE id = ' + req.params.id);",
+    "fix": "After extracting the ID, verify ownership within the same function: \"if (resource.userId !== session.user.id) return 403\".",
+    "cweId": "CWE-639",
+    "cvssScore": 8.6,
+    "owaspCategory": "A01:2021",
+    "source": null,
+    "context": {
+      "startLine": 9,
+      "endLine": 18,
+      "code": "    9    const rows = await db.query(`SELECT * FROM users WHERE id = ${req.params.id}`);\n   10    res.json(rows[0] ?? null);\n   11  });\n   12  \n   13  // Anyone can delete any account. No check on who is asking.\n   14  usersRouter.delete('/:id', async (req, res) => {\n   15    await db.query('DELETE FROM users WHERE id = ' + req.params.id);\n   16    res.status(204).end();\n   17  });\n   18  ",
+      "redacted": false
+    },
+    "triage": null,
+    "reasoning": {
+      "exploitability": "confirmed",
+      "confidence": 0.95,
+      "attackerPosition": "anonymous-internet",
+      "preconditions": [],
+      "attackPath": [
+        "Attacker sends an anonymous DELETE request to /users/<victim-id>.",
+        "Express delivers it to the users router mounted at /users with only JSON parsing and no login check.",
+        "Handler deletes the database row for the attacker-supplied ID without verifying ownership."
+      ],
+      "impact": "Attacker can delete any user account without logging in by supplying its ID, causing permanent account loss and lockout.",
+      "blastRadius": "many-users",
+      "evidence": [
+        {
+          "file": "routes/users.js",
+          "line": 14,
+          "quote": "usersRouter.delete('/:id', async (req, res) => {"
+        },
+        {
+          "file": "routes/users.js",
+          "line": 15,
+          "quote": "await db.query('DELETE FROM users WHERE id = ' + req.params.id);"
+        },
+        {
+          "file": "routes/users.js",
+          "line": 13,
+          "quote": "// Anyone can delete any account. No check on who is asking."
+        },
+        {
+          "file": "server/index.js",
+          "line": 12,
+          "quote": "app.use('/users', usersRouter);"
+        },
+        {
+          "file": "server/index.js",
+          "line": 11,
+          "quote": "app.use(express.json());"
+        }
+      ],
+      "severityAdjustment": "keep",
+      "fixSummary": "Require authentication on DELETE /users/:id and verify the caller owns the ID or has an admin role, returning 403 otherwise.",
+      "plainLanguage": "Anyone on the internet can delete any customer account just by guessing its number, with no password needed. This would lock real users out and quickly destroy trust in your business."
+    }
+  },
+  {
+    "id": "d5a83231183a",
+    "ruleId": "sql-injection",
+    "ruleName": "SQL Injection",
+    "severity": "critical",
+    "vulnClass": "sql-injection",
+    "message": "SQL query built with template-literal interpolation — user input can rewrite the query.",
+    "file": "routes/users.js",
+    "line": 9,
+    "evidence": "const rows = await db.query(`SELECT * FROM users WHERE id = ${req.params.id}`);",
+    "fix": "Use parameterized queries / prepared statements. Pass values as a separate argument, never build the SQL string with `+` or `${}`. Examples: pg — client.query(\"SELECT * FROM users WHERE id = $1\", [id]); mysql2 — conn.execute(\"SELECT * FROM users WHERE id = ?\", [id]); Prisma/Drizzle — use the query builder or sql`...${id}` tagged templates that bind safely.",
+    "cweId": "CWE-89",
+    "cvssScore": 9.8,
+    "owaspCategory": "A03:2021",
+    "source": null,
+    "context": {
+      "startLine": 3,
+      "endLine": 15,
+      "code": "    3  import { db } from '../server/db.js';\n    4  \n    5  export const usersRouter = Router();\n    6  \n    7  // Anyone can call this, and the id is pasted straight into the SQL text.\n    8  usersRouter.get('/:id', async (req, res) => {\n    9    const rows = await db.query(`SELECT * FROM users WHERE id = ${req.params.id}`);\n   10    res.json(rows[0] ?? null);\n   11  });\n   12  \n   13  // Anyone can delete any account. No check on who is asking.\n   14  usersRouter.delete('/:id', async (req, res) => {\n   15    await db.query('DELETE FROM users WHERE id = ' + req.params.id);",
+      "redacted": false
+    },
+    "triage": null,
+    "reasoning": {
+      "exploitability": "confirmed",
+      "confidence": 0.95,
+      "attackerPosition": "anonymous-internet",
+      "preconditions": [],
+      "attackPath": [
+        "Attacker sends unauthenticated GET request to /users/:id with SQL payload in the id segment.",
+        "Express forwards the request to the usersRouter handler mounted at /users with no auth check.",
+        "Handler pastes req.params.id directly into SQL text and executes it via db.query then returns the result."
+      ],
+      "impact": "Attacker can rewrite the WHERE clause to bypass the id lookup and read arbitrary rows from the users table.",
+      "blastRadius": "many-users",
+      "evidence": [
+        {
+          "file": "server/index.js",
+          "line": 12,
+          "quote": "app.use('/users', usersRouter);"
+        },
+        {
+          "file": "routes/users.js",
+          "line": 7,
+          "quote": "// Anyone can call this, and the id is pasted straight into the SQL text."
+        },
+        {
+          "file": "routes/users.js",
+          "line": 8,
+          "quote": "usersRouter.get('/:id', async (req, res) => {"
+        },
+        {
+          "file": "routes/users.js",
+          "line": 9,
+          "quote": "const rows = await db.query(`SELECT * FROM users WHERE id = ${req.params.id}`);"
+        },
+        {
+          "file": "routes/users.js",
+          "line": 10,
+          "quote": "res.json(rows[0] ?? null);"
+        }
+      ],
+      "severityAdjustment": "keep",
+      "fixSummary": "Use a parameterized query such as db.query('SELECT * FROM users WHERE id = $1', [req.params.id]) and validate id is numeric.",
+      "plainLanguage": "Anyone on the internet can ask for one user account and trick the system into showing private details for many other accounts. Losing control of customer details like this can break trust and create legal and money problems for the business."
+    }
+  },
+  {
+    "id": "9f1550d64cf0",
+    "ruleId": "sql-injection",
+    "ruleName": "SQL Injection",
+    "severity": "critical",
+    "vulnClass": "sql-injection",
+    "message": "SQL query built with string concatenation — user input can rewrite the query.",
+    "file": "routes/users.js",
+    "line": 15,
+    "evidence": "await db.query('DELETE FROM users WHERE id = ' + req.params.id);",
+    "fix": "Use parameterized queries / prepared statements. Pass values as a separate argument, never build the SQL string with `+` or `${}`. Examples: pg — client.query(\"SELECT * FROM users WHERE id = $1\", [id]); mysql2 — conn.execute(\"SELECT * FROM users WHERE id = ?\", [id]); Prisma/Drizzle — use the query builder or sql`...${id}` tagged templates that bind safely.",
+    "cweId": "CWE-89",
+    "cvssScore": 9.8,
+    "owaspCategory": "A03:2021",
+    "source": null,
+    "context": {
+      "startLine": 9,
+      "endLine": 18,
+      "code": "    9    const rows = await db.query(`SELECT * FROM users WHERE id = ${req.params.id}`);\n   10    res.json(rows[0] ?? null);\n   11  });\n   12  \n   13  // Anyone can delete any account. No check on who is asking.\n   14  usersRouter.delete('/:id', async (req, res) => {\n   15    await db.query('DELETE FROM users WHERE id = ' + req.params.id);\n   16    res.status(204).end();\n   17  });\n   18  ",
+      "redacted": false
+    },
+    "triage": null,
+    "reasoning": {
+      "exploitability": "confirmed",
+      "confidence": 0.95,
+      "attackerPosition": "anonymous-internet",
+      "preconditions": [],
+      "attackPath": [
+        "Attacker sends an unauthenticated DELETE request to /users/:id with a crafted id value.",
+        "The delete handler concatenates req.params.id directly into the DELETE statement with no parameterization.",
+        "The database executes the rewritten query, allowing deletion of arbitrary or all users."
+      ],
+      "impact": "An attacker can delete any user account and can rewrite the query to delete all users or alter database logic, e.g. with `0 OR 1=1`.",
+      "blastRadius": "many-users",
+      "evidence": [
+        {
+          "file": "server/index.js",
+          "line": 12,
+          "quote": "app.use('/users', usersRouter);"
+        },
+        {
+          "file": "routes/users.js",
+          "line": 14,
+          "quote": "usersRouter.delete('/:id', async (req, res) => {"
+        },
+        {
+          "file": "routes/users.js",
+          "line": 15,
+          "quote": "await db.query('DELETE FROM users WHERE id = ' + req.params.id);"
+        },
+        {
+          "file": "routes/users.js",
+          "line": 13,
+          "quote": "// Anyone can delete any account. No check on who is asking."
+        }
+      ],
+      "severityAdjustment": "keep",
+      "fixSummary": "Use a parameterized query such as db.query('DELETE FROM users WHERE id = $1', [req.params.id]) and require authorization for deletes.",
+      "plainLanguage": "Anyone on the internet can delete any customer account by sending a specially shaped web address, and can even wipe out every account at once. Losing all user accounts would break trust with customers and shut down the business."
+    }
+  },
+  {
+    "id": "c9726bc2f595",
+    "ruleId": "exposed-secrets",
+    "ruleName": "Exposed Secrets",
+    "severity": "critical",
+    "vulnClass": "secrets",
+    "message": "Database URL with credentials found in source code.",
+    "file": "server/config.js",
+    "line": 8,
+    "evidence": "post...(redacted)...5432",
+    "fix": "Move this Database URL with credentials to an environment variable. Add the variable to .env (git-ignored) and reference it via process.env.YOUR_KEY_NAME. Never commit secrets to source control.",
+    "cweId": "CWE-798",
+    "cvssScore": 7.5,
+    "owaspCategory": "A07:2021",
+    "source": null,
+    "context": {
+      "startLine": 2,
+      "endLine": 10,
+      "code": "    2  // connects anywhere, but the pattern is exactly what shows up in vibe-coded\n    3  // repos: credentials typed straight into a config module.\n    4  export const database = {\n    5    host: 'db.internal',\n    6    user: 'app',\n    7    password: '[REDACTED:15]',\n    8    connectionString: 'postgres://app:[REDACTED]@db.internal:5432/app',\n    9  };\n   10  ",
+      "redacted": true
+    },
+    "triage": null,
+    "reasoning": {
+      "exploitability": "not-exploitable",
+      "confidence": 0.92,
+      "attackerPosition": "none",
+      "preconditions": [],
+      "attackPath": [
+        "Attacker reads the hard-coded connectionString value from server/config.js.",
+        "Attacker tries to use it against db.internal, which is a fake internal stub host that never connects to a real database."
+      ],
+      "impact": "There is no real credential to steal; the string points to a fake internal host used only as a coding example, so no database can be accessed.",
+      "blastRadius": "single-user",
+      "evidence": [
+        {
+          "file": "server/config.js",
+          "line": 8,
+          "quote": "connectionString: 'postgres://app:[REDACTED]@db.internal:5432/app',"
+        },
+        {
+          "file": "server/config.js",
+          "line": 5,
+          "quote": "host: 'db.internal',"
+        },
+        {
+          "file": "server/config.js",
+          "line": 2,
+          "quote": "// connects anywhere, but the pattern is exactly what shows up in vibe-coded"
+        }
+      ],
+      "severityAdjustment": "lower",
+      "fixSummary": "Remove the hard-coded password and connection string and load database credentials from environment variables, even in demo code.",
+      "plainLanguage": "The password written in this file is fake and cannot be used to open anything, so your users and business are not at risk from it. It is still worth cleaning up because leaving pretend secrets in code teaches a habit that could one day expose a real password and customer information."
+    }
+  },
+  {
+    "id": "e743415fb48d",
+    "ruleId": "hardcoded-credentials",
+    "ruleName": "Hardcoded Credentials",
+    "severity": "critical",
+    "vulnClass": "secrets",
+    "message": "Hardcoded password detected.",
+    "file": "server/config.js",
+    "line": 7,
+    "evidence": "***REDACTED***",
+    "fix": "Move credentials to environment variables. Use process.env or a secrets manager. Never store passwords or connection strings in source code.",
+    "cweId": "CWE-798",
+    "cvssScore": 7.5,
+    "owaspCategory": "A07:2021",
+    "source": null,
+    "context": {
+      "startLine": 1,
+      "endLine": 10,
+      "code": "    1  // Planted class: secrets in code. These values are fake and the app never\n    2  // connects anywhere, but the pattern is exactly what shows up in vibe-coded\n    3  // repos: credentials typed straight into a config module.\n    4  export const database = {\n    5    host: 'db.internal',\n    6    user: 'app',\n    7    password: '[REDACTED:15]',\n    8    connectionString: 'postgres://app:[REDACTED]@db.internal:5432/app',\n    9  };\n   10  ",
+      "redacted": true
+    },
+    "triage": null,
+    "reasoning": {
+      "exploitability": "not-exploitable",
+      "confidence": 0.95,
+      "attackerPosition": "none",
+      "preconditions": [],
+      "attackPath": [
+        "Attacker reads the hardcoded password baked into server/config.js.",
+        "Attacker tries to use it against db.internal, but the file itself states the values are fake and the app never connects anywhere."
+      ],
+      "impact": "The attacker gains nothing because the credential is explicitly fake and there is no live database to authenticate against.",
+      "blastRadius": "single-user",
+      "evidence": [
+        {
+          "file": "server/config.js",
+          "line": 7,
+          "quote": "    password: '[REDACTED:15]',"
+        },
+        {
+          "file": "server/config.js",
+          "line": 1,
+          "quote": "// Planted class: secrets in code. These values are fake and the app never"
+        },
+        {
+          "file": "server/config.js",
+          "line": 2,
+          "quote": "// connects anywhere, but the pattern is exactly what shows up in vibe-coded"
+        },
+        {
+          "file": "server/config.js",
+          "line": 5,
+          "quote": "    host: 'db.internal',"
+        }
+      ],
+      "severityAdjustment": "lower",
+      "fixSummary": "Remove the hardcoded password and connection string from server/config.js and load them from environment variables at startup.",
+      "plainLanguage": "No one can use this password to break in because it is a fake placeholder with no real database behind it. You should still keep passwords out of code because copying this habit into a real product would give strangers full access to your business data."
+    }
+  },
+  {
+    "id": "47ec89f3f439",
+    "ruleId": "hardcoded-credentials",
+    "ruleName": "Hardcoded Credentials",
+    "severity": "critical",
+    "vulnClass": "secrets",
+    "message": "Database connection string with credentials detected.",
+    "file": "server/config.js",
+    "line": 8,
+    "evidence": "postgres://app:[REDACTED]@db.internal:5432",
+    "fix": "Move credentials to environment variables. Use process.env or a secrets manager. Never store passwords or connection strings in source code.",
+    "cweId": "CWE-798",
+    "cvssScore": 7.5,
+    "owaspCategory": "A07:2021",
+    "source": null,
+    "context": {
+      "startLine": 2,
+      "endLine": 10,
+      "code": "    2  // connects anywhere, but the pattern is exactly what shows up in vibe-coded\n    3  // repos: credentials typed straight into a config module.\n    4  export const database = {\n    5    host: 'db.internal',\n    6    user: 'app',\n    7    password: '[REDACTED:15]',\n    8    connectionString: 'postgres://app:[REDACTED]@db.internal:5432/app',\n    9  };\n   10  ",
+      "redacted": true
+    },
+    "triage": null,
+    "reasoning": {
+      "exploitability": "not-exploitable",
+      "confidence": 0.9,
+      "attackerPosition": "none",
+      "preconditions": [],
+      "attackPath": [
+        "Attacker reads server/config.js and recovers the hardcoded postgres connection string.",
+        "Attacker extracts the username, password and internal host from that string to try a direct database login.",
+        "The login cannot succeed against a real database because the values are fake placeholders and the app uses a stub database layer."
+      ],
+      "impact": "No database access is gained; the hardcoded string is a fake placeholder for a stub database so there is no data loss.",
+      "blastRadius": "whole-system",
+      "evidence": [
+        {
+          "file": "server/config.js",
+          "line": 8,
+          "quote": "    connectionString: 'postgres://app:[REDACTED]@db.internal:5432/app',"
+        },
+        {
+          "file": "server/config.js",
+          "line": 7,
+          "quote": "    password: '[REDACTED:15]',"
+        },
+        {
+          "file": "server/config.js",
+          "line": 5,
+          "quote": "    host: 'db.internal',"
+        },
+        {
+          "file": "tests/smoke.test.js",
+          "line": null,
+          "quote": "  const rows = await db.query('SELECT 1');"
+        }
+      ],
+      "severityAdjustment": "lower",
+      "fixSummary": "Load the database user, password and connection string from environment variables instead of hardcoding them in server/config.js, keeping only non-secret defaults in code.",
+      "plainLanguage": "Anyone who sees the code can see the database password written inside it, which normally would let strangers steal or delete all customer information. In this demo the password is fake and there is no real database, so nothing can be stolen, but you must move passwords out of code before using this for real customers."
+    }
+  },
+  {
+    "id": "620206d4e586",
+    "ruleId": "missing-gitignore",
+    "ruleName": "Missing .gitignore Entries",
+    "severity": "warning",
+    "vulnClass": "hardening-config",
+    "message": "\".DS_Store\" (macOS metadata) is not in .gitignore.",
+    "file": ".gitignore",
+    "line": 1,
+    "evidence": "Missing: .DS_Store",
+    "fix": "Add \".DS_Store\" to your .gitignore to keep your repo clean and avoid accidentally committing unnecessary or sensitive files.",
+    "cweId": "CWE-538",
+    "cvssScore": 5.3,
+    "owaspCategory": "A05:2021",
+    "source": null,
+    "context": {
+      "startLine": 1,
+      "endLine": 5,
+      "code": "    1  node_modules/\n    2  .env\n    3  .env.*\n    4  *.log\n    5  ",
+      "redacted": false
+    },
+    "triage": null,
+    "reasoning": null
+  },
+  {
+    "id": "c71bfd2a3205",
+    "ruleId": "missing-csrf",
+    "ruleName": "Missing CSRF Protection",
+    "severity": "warning",
+    "vulnClass": "auth-sessions-crypto",
+    "message": "State-changing route with no CSRF protection",
+    "file": "routes/preview.js",
+    "line": 7,
+    "evidence": "previewRouter.post('/', async (req, res) => {",
+    "fix": "Add CSRF protection to state-changing endpoints. Options: (1) Use SameSite=Lax or Strict cookies. (2) Implement double-submit cookie pattern. (3) Check Origin/Referer headers. (4) Use a CSRF token library like csrf-csrf. Without CSRF protection, attackers can trigger actions on behalf of your users from external sites.",
+    "cweId": "CWE-352",
+    "cvssScore": 6.5,
+    "owaspCategory": "A01:2021",
+    "source": null,
+    "context": {
+      "startLine": 1,
+      "endLine": 12,
+      "code": "    1  // Planted class: server-side request forgery.\n    2  import { Router } from 'express';\n    3  \n    4  export const previewRouter = Router();\n    5  \n    6  // The server fetches whatever URL the client sends, including internal ones.\n    7  previewRouter.post('/', async (req, res) => {\n    8    const upstream = await fetch(req.body.url);\n    9    const text = await upstream.text();\n   10    res.json({ status: upstream.status, length: text.length });\n   11  });\n   12  ",
+      "redacted": false
+    },
+    "triage": null,
+    "reasoning": null
+  },
+  {
+    "id": "204c2119bbb0",
+    "ruleId": "missing-csrf",
+    "ruleName": "Missing CSRF Protection",
+    "severity": "warning",
+    "vulnClass": "auth-sessions-crypto",
+    "message": "State-changing route with no CSRF protection",
+    "file": "routes/users.js",
+    "line": 14,
+    "evidence": "usersRouter.delete('/:id', async (req, res) => {",
+    "fix": "Add CSRF protection to state-changing endpoints. Options: (1) Use SameSite=Lax or Strict cookies. (2) Implement double-submit cookie pattern. (3) Check Origin/Referer headers. (4) Use a CSRF token library like csrf-csrf. Without CSRF protection, attackers can trigger actions on behalf of your users from external sites.",
+    "cweId": "CWE-352",
+    "cvssScore": 6.5,
+    "owaspCategory": "A01:2021",
+    "source": null,
+    "context": {
+      "startLine": 8,
+      "endLine": 18,
+      "code": "    8  usersRouter.get('/:id', async (req, res) => {\n    9    const rows = await db.query(`SELECT * FROM users WHERE id = ${req.params.id}`);\n   10    res.json(rows[0] ?? null);\n   11  });\n   12  \n   13  // Anyone can delete any account. No check on who is asking.\n   14  usersRouter.delete('/:id', async (req, res) => {\n   15    await db.query('DELETE FROM users WHERE id = ' + req.params.id);\n   16    res.status(204).end();\n   17  });\n   18  ",
+      "redacted": false
+    },
+    "triage": null,
+    "reasoning": null
+  },
+  {
+    "id": "131ec16094ed",
+    "ruleId": "no-pagination",
+    "ruleName": "No Pagination",
+    "severity": "warning",
+    "vulnClass": "hardening-config",
+    "message": "SQL SELECT without LIMIT clause — returns all matching rows",
+    "file": "routes/users.js",
+    "line": 9,
+    "evidence": "const rows = await db.query(`SELECT * FROM users WHERE id = ${req.params.id}`);",
+    "fix": "Always add pagination or limits to list endpoints. Use limit/offset, cursor-based pagination, or at minimum a hard cap (e.g., .limit(100)). Without limits: (1) anyone can scrape your entire database in one request, (2) large result sets crash your server or client, (3) it's a trivial DoS vector.",
+    "cweId": "CWE-770",
+    "cvssScore": 4.3,
+    "owaspCategory": "A04:2021",
+    "source": null,
+    "context": {
+      "startLine": 3,
+      "endLine": 15,
+      "code": "    3  import { db } from '../server/db.js';\n    4  \n    5  export const usersRouter = Router();\n    6  \n    7  // Anyone can call this, and the id is pasted straight into the SQL text.\n    8  usersRouter.get('/:id', async (req, res) => {\n    9    const rows = await db.query(`SELECT * FROM users WHERE id = ${req.params.id}`);\n   10    res.json(rows[0] ?? null);\n   11  });\n   12  \n   13  // Anyone can delete any account. No check on who is asking.\n   14  usersRouter.delete('/:id', async (req, res) => {\n   15    await db.query('DELETE FROM users WHERE id = ' + req.params.id);",
+      "redacted": false
+    },
+    "triage": null,
+    "reasoning": null
+  },
+  {
+    "id": "c645f9d63785",
+    "ruleId": "no-error-monitoring",
+    "ruleName": "No Error Monitoring",
+    "severity": "info",
+    "vulnClass": "hardening-config",
+    "message": "No error monitoring/alerting dependency found (Sentry, Rollbar, Bugsnag, Datadog…). Production errors will fail silently — you won't know the app is broken until a user tells you.",
+    "file": "package.json",
+    "line": 1,
+    "evidence": null,
+    "fix": "Add an error monitor: @sentry/nextjs (or @sentry/node), Rollbar, or Bugsnag — wire it to capture unhandled errors and alert you. If your host already provides this, treat this as informational.",
+    "cweId": null,
+    "cvssScore": null,
+    "owaspCategory": null,
+    "source": null,
+    "context": {
+      "startLine": 1,
+      "endLine": 7,
+      "code": "    1  {\n    2    \"name\": \"seeded-app\",\n    3    \"version\": \"0.1.0\",\n    4    \"private\": true,\n    5    \"description\": \"Intentionally vulnerable Express app used as the before state for Vibe Audit 2.0 demos.\",\n    6    \"type\": \"module\",\n    7    \"main\": \"server/index.js\",",
+      "redacted": false
+    },
+    "triage": null,
+    "reasoning": null
+  }
+]

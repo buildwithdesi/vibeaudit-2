@@ -56,8 +56,10 @@ Show: the database injection section, scrolling slowly through verdict, attack p
 On screen: terminal.
 
 ```
-node src/cli.ts patch runs/<id> --backend muse-code --run-tests
+node src/cli.ts patch runs/<id> --run-tests
 ```
+
+(Muse Spark backend, the one recorded in `demo/after`. Add `--backend muse-code` only if the agent CLI has been installed and run green before recording.)
 
 Voice: "Then it fixes them. Muse Spark proposes exact edits, or Muse Code does it as an agent, on a sandbox branch, never on main. The scan runs again on the patched code, and the app's own tests run in a container. Green means two things: the findings are gone, and the tests still pass."
 

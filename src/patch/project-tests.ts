@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { cpSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { scrubbedEnv } from '../util/env.ts';
 
@@ -140,9 +140,14 @@ export async function runProjectTests(
         started,
       );
     }
-    const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+    const npm = npmCommand();
     if (await hasDependencies(copy)) {
-      const installResult = await capture(npm, [...install, ...installFlags], timeout, copy);
+      const installResult = await capture(
+        npm.cmd,
+        [...npm.prefix, ...install, ...installFlags],
+        timeout,
+        copy,
+      );
       if (installResult.code !== 0) {
         return result(
           true,
@@ -154,7 +159,7 @@ export async function runProjectTests(
         );
       }
     }
-    const testResult = await capture(npm, ['test', '--silent'], timeout, copy);
+    const testResult = await capture(npm.cmd, [...npm.prefix, 'test', '--silent'], timeout, copy);
     return result(true, testResult.code === 0, 'local', 'npm test', testResult.tail, started);
   } finally {
     rmSync(work, { recursive: true, force: true });
@@ -177,6 +182,17 @@ function result(
     outputTail,
     durationMs: Math.round(performance.now() - started),
   };
+}
+
+/**
+ * npm without a shell: the npm that ships next to this node binary, run as a
+ * script. That avoids the .cmd shim on Windows, which would need shell:true
+ * and unescaped argument joining.
+ */
+function npmCommand(): { cmd: string; prefix: string[] } {
+  const bundled = join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+  if (existsSync(bundled)) return { cmd: process.execPath, prefix: [bundled] };
+  return { cmd: process.platform === 'win32' ? 'npm.cmd' : 'npm', prefix: [] };
 }
 
 async function testScript(repoDir: string): Promise<string | null> {
