@@ -63,6 +63,25 @@ test('reads SSH clone URLs, and still clones over https', () => {
   }
 });
 
+test('a URL the GitHub patterns cannot read is "not a supported GitHub URL", not a missing folder', () => {
+  const cases = [
+    'git://github.com/OWASP/NodeGoat',
+    'https://user@github.com/OWASP/NodeGoat',
+    'https://github.com:443/OWASP/NodeGoat',
+    'https://github.com',
+    'https://gitlab.com/owner/repo',
+    'ssh://git@github.example/owner/repo',
+    'file:///srv/repo',
+  ];
+  for (const input of cases) {
+    assert.throws(
+      () => parseTarget(input),
+      { name: 'TargetError', message: /^"[^"]+" is not a supported GitHub URL\./ },
+      input,
+    );
+  }
+});
+
 test('a malformed %-escape is a TargetError, not a URIError', () => {
   assert.throws(() => parseTarget('https://github.com/owner/repo/tree/%E0%A4%A'), TargetError);
   assert.throws(() => buildGitHubTarget('owner', 'repo', '%E0%A4%A'), TargetError);
