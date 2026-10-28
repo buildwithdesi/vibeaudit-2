@@ -379,14 +379,14 @@ export async function runPatchLoop(runDir: string, options: PatchOptions): Promi
       ).toFixed(4),
     ),
   };
-  await writeJson(join(runDir, 'patch.json'), record);
-  await writeJson(join(runDir, 'manifest.json'), {
-    ...manifest,
-    stages: {
-      ...manifest.stages,
-      patch: options.dryRun ? 'pending' : error ? 'failed' : patchCommit ? 'done' : 'failed',
-    },
-  });
+  // A dry run never overwrites a live record, and never moves the stage.
+  await writeJson(join(runDir, options.dryRun ? 'patch.dry-run.json' : 'patch.json'), record);
+  if (!options.dryRun) {
+    await writeJson(join(runDir, 'manifest.json'), {
+      ...manifest,
+      stages: { ...manifest.stages, patch: error ? 'failed' : patchCommit ? 'done' : 'failed' },
+    });
+  }
   info(
     options.dryRun
       ? `dry run: ${selected.length} findings would be patched with the ${backend} backend`

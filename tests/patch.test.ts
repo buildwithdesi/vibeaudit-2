@@ -317,3 +317,16 @@ test('a second patch run on a local target starts again from the snapshot', asyn
   assert.ok(second.patchCommit, `second run commits a patch: ${JSON.stringify(second.outcomes)}`);
   assert.ok(readFileSync(join(runDir, 'patch.diff'), 'utf8').includes('$1'), 'diff kept');
 });
+
+test('a dry run never overwrites a live patch record or its stage', async () => {
+  const runDir = await scanFresh('va2-patch-dry-live-');
+  const live = await runPatchLoop(runDir, loopOptions(fakePatcher([])));
+  assert.ok(live.patchCommit);
+  const liveRecord = readFileSync(join(runDir, 'patch.json'), 'utf8');
+  const liveManifest = readFileSync(join(runDir, 'manifest.json'), 'utf8');
+  const dry = await runPatchLoop(runDir, loopOptions(fakePatcher([]), { dryRun: true }));
+  assert.equal(dry.patchCommit, null);
+  assert.equal(readFileSync(join(runDir, 'patch.json'), 'utf8'), liveRecord);
+  assert.equal(readFileSync(join(runDir, 'manifest.json'), 'utf8'), liveManifest);
+  assert.ok(existsSync(join(runDir, 'patch.dry-run.json')), 'the plan is written beside it');
+});
