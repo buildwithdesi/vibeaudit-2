@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { RunManifest } from '../src/model/finding.ts';
-import { runScan } from '../src/pipeline/run.ts';
+import { assertRuleListComplete, runScan } from '../src/pipeline/run.ts';
 import { topClasses } from '../src/report/summary.ts';
 import { setLogLevel } from '../src/util/log.ts';
 
@@ -29,6 +29,7 @@ test('scans the seeded app end to end and finds all five planted classes', async
   );
   assert.ok(manifest.engine.rulesAvailable > 0);
   assert.ok(manifest.engine.rulesRun > 0);
+  assert.equal(manifest.engine.rulesAvailable, manifest.engine.rulesRun, 'the full rule list');
   assert.equal(manifest.stages.engine, 'done');
   assert.equal(manifest.stages.reasoning, 'pending');
 
@@ -56,4 +57,9 @@ test('scans the seeded app end to end and finds all five planted classes', async
     !serialized.includes('Winter2026Prod'),
     'findings.json never carries the planted password',
   );
+});
+
+test('a rule list shorter than the rules the scan ran is refused, not recorded', () => {
+  assert.throws(() => assertRuleListComplete(56, 104), /56 rules listed, but the scan ran 104/);
+  assert.doesNotThrow(() => assertRuleListComplete(104, 104));
 });

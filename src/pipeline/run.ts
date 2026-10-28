@@ -1,7 +1,13 @@
 import { randomBytes } from 'node:crypto';
 import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { ENGINE_NAME, engineVersion, listEngineRules, runEngineScan } from '../engine/v1.ts';
+import {
+  ENGINE_NAME,
+  EngineError,
+  engineVersion,
+  listEngineRules,
+  runEngineScan,
+} from '../engine/v1.ts';
 import { cloneGitHub } from '../intake/clone.ts';
 import { buildGitHubTarget, parseTarget, type ScanTarget } from '../intake/target.ts';
 import type { FindingT, RunManifestT } from '../model/finding.ts';
@@ -66,6 +72,7 @@ export async function runScan(input: string, options: ScanOptions): Promise<Scan
     sca: options.sca,
     trustTargetConfig: options.trustTargetConfig,
   });
+  assertRuleListComplete(rules.length, engine.output.summary.rulesRun);
   await writeJson(
     join(runDir, 'engine-output.json'),
     JSON.parse(redactSecrets(JSON.stringify(engine.output)).text),
@@ -126,6 +133,19 @@ export async function runScan(input: string, options: ScanOptions): Promise<Scan
   await writeText(join(runDir, 'summary.md'), renderSummary(manifest, findings));
   info(`wrote ${runDir}`);
   return { runDir, manifest, findings };
+}
+
+/**
+ * The scan cannot run more rules than the engine lists. A shorter list means
+ * the list itself came back cut off, and the manifest and summary would
+ * quietly under-report coverage ("104 of 56 rules run"). Stop instead.
+ */
+export function assertRuleListComplete(rulesAvailable: number, rulesRun: number): void {
+  if (rulesAvailable < rulesRun) {
+    throw new EngineError(
+      `engine rule list is incomplete: ${rulesAvailable} rules listed, but the scan ran ${rulesRun}`,
+    );
+  }
 }
 
 function makeRunId(target: ScanTarget): string {
