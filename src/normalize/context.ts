@@ -187,8 +187,10 @@ export function redactSecrets(text: string): { text: string; redacted: boolean }
           const quote = escapedQuote ?? plainQuote ?? unclosedQuote;
           const quoted = escapedValue ?? plainValue ?? unclosedValue;
           const auth = AUTH_OPEN.test(open);
-          // `auth` inside a lowercase word, as in `oauth:` or a URN, is not a name.
-          if (auth && open.startsWith('auth') && /[a-z]$/.test(line.slice(0, offset))) return match;
+          // `auth` inside a lowercase word before a bare value, as in a URN's
+          // `oauth:grant-type`, is not a name.
+          const inWord = open.startsWith('auth') && /[a-z]$/.test(line.slice(0, offset));
+          if (auth && inWord && bare !== undefined) return match;
           if (quote !== undefined && quoted !== undefined) {
             if (quoted.includes('[REDACTED') || QUOTED_REFERENCE.test(quoted)) return match;
             // A template literal that interpolates is code that builds a value.

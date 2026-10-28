@@ -68,6 +68,7 @@ test('masks values with escapes, auth values, config-file values and cut-off quo
     `"auths": {"https://index.docker.io/v1/": {"auth": "${M}dXNlcjpwYXNz=="}}`,
     `_auth=${M}abcdefgh`,
     `basic_auth: 'admin:${M}pw'`,
+    `{ oauth: '${M}abcdefgh' }`,
     // YAML, compose and .properties values that look like member chains.
     `password: Winter2024.${M}`,
     `  password: secret.${M}`,
