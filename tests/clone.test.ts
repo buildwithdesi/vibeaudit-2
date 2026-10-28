@@ -9,12 +9,17 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { CloneError, cloneArgs, cloneEnv, cloneGitHub } from '../src/intake/clone.ts';
 import { buildGitHubTarget, type GitHubTarget, parseTarget } from '../src/intake/target.ts';
+import { setLogLevel } from '../src/util/log.ts';
+
+setLogLevel('quiet');
 
 // Nothing here touches the network. Each test points HOME at a throwaway
 // folder whose .gitconfig sends https://github.com/ to bare repos in a temp
@@ -26,6 +31,7 @@ after(() => rmSync(root, { recursive: true, force: true }));
 const remotes = join(root, 'remotes');
 const fixtureHome = makeHome('fixture', []);
 const appCommit = makeApp();
+const releaseCommit = git(join(root, 'work'), ['rev-parse', 'release/1.3']);
 
 const redirect = [`[url "${pathToFileURL(remotes).href}/"]`, '\tinsteadOf = https://github.com/'];
 // The hardened clone allows https only. The redirect lands on file://, so the user config allows it.
@@ -98,6 +104,12 @@ function makeApp(): string {
 
 function app(): GitHubTarget {
   return buildGitHubTarget('acme', 'app', null);
+}
+
+function github(input: string): GitHubTarget {
+  const target = parseTarget(input);
+  assert.equal(target.kind, 'github', input);
+  return target as GitHubTarget;
 }
 
 test('cloneArgs keeps every hardening flag and puts the URL right after --', () => {
@@ -216,4 +228,68 @@ test('only https is allowed: a remote that resolves to file:// is refused', asyn
     assert.match(error.message, /transport 'file' not allowed/);
     return true;
   });
+});
+
+test('a /tree/ or /blob/ URL with a path clones the branch or tag in front of the path', async () => {
+  useHome(redirectHome);
+  const cases: [string, string, string][] = [
+    ['https://github.com/acme/app/tree/main/src', 'main', appCommit],
+    ['https://github.com/acme/app/blob/main/src/app.ts', 'main', appCommit],
+    ['https://github.com/acme/app/tree/release/1.3', 'release/1.3', releaseCommit],
+    ['https://github.com/acme/app/tree/release/1.3/src', 'release/1.3', releaseCommit],
+    ['https://github.com/acme/app/blob/v1.0/README.md', 'v1.0', appCommit],
+  ];
+  for (const [url, ref, commit] of cases) {
+    const result = await cloneGitHub(github(url), nextDest());
+    assert.equal(result.ref, ref, url);
+    assert.equal(result.commit, commit, url);
+  }
+  assert.equal((await cloneGitHub(app(), nextDest())).ref, null);
+});
+
+test('a ref that matches no branch or tag still fails with the name that was asked for', async () => {
+  useHome(redirectHome);
+  await assert.rejects(
+    cloneGitHub(github('https://github.com/acme/app/tree/nope/src'), nextDest()),
+    /Remote branch nope\/src not found/,
+  );
+});
+
+test('a private or missing repository is named as such, not as a git auth error', async () => {
+  // GitHub answers 401 for both. With prompts off, git can only say it could not read a username.
+  const server = createServer((_request, response) => {
+    response.writeHead(401, { 'WWW-Authenticate': 'Basic realm="GitHub"' });
+    response.end();
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as AddressInfo;
+  useHome(
+    makeHome('private', [
+      `[url "http://127.0.0.1:${port}/"]`,
+      '\tinsteadOf = https://github.com/',
+      '[protocol "http"]',
+      '\tallow = always',
+    ]),
+  );
+  const proxies = { http_proxy: process.env.http_proxy, HTTP_PROXY: process.env.HTTP_PROXY };
+  delete process.env.http_proxy;
+  delete process.env.HTTP_PROXY;
+  try {
+    for (const input of ['acme/secret', 'https://github.com/acme/secret/tree/main/src']) {
+      await assert.rejects(cloneGitHub(github(input), nextDest()), (error: unknown) => {
+        assert.ok(error instanceof CloneError);
+        assert.match(
+          error.message,
+          /^git clone of https:\/\/github\.com\/acme\/secret failed: the repository is private or does not exist/,
+        );
+        return true;
+      });
+    }
+  } finally {
+    server.closeAllConnections();
+    server.close();
+    for (const [key, value] of Object.entries(proxies)) {
+      if (value !== undefined) process.env[key] = value;
+    }
+  }
 });
