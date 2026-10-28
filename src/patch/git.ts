@@ -71,12 +71,34 @@ export async function commitAll(repoDir: string, message: string): Promise<strin
   return (await git(repoDir, ['rev-parse', 'HEAD'])).trim();
 }
 
-export async function changedFiles(repoDir: string, ref: string): Promise<string[]> {
-  const out = await git(repoDir, ['diff', '--no-ext-diff', '--name-only', ref]);
-  return out
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean);
+/**
+ * What the working tree changed since `ref`: tracked files that differ, and
+ * every untracked file, gitignored ones included, so a planted .gitignore
+ * cannot hide a new file. Names are read NUL-separated, so none comes back
+ * quoted.
+ */
+export async function changedFiles(
+  repoDir: string,
+  ref: string,
+): Promise<{ tracked: string[]; untracked: string[] }> {
+  const tracked = await git(repoDir, [
+    'diff',
+    '--no-ext-diff',
+    '--no-renames',
+    '--name-only',
+    '-z',
+    ref,
+  ]);
+  return { tracked: nulList(tracked), untracked: await untrackedFiles(repoDir) };
+}
+
+/** Every untracked file, gitignored ones included. */
+export async function untrackedFiles(repoDir: string): Promise<string[]> {
+  return nulList(await git(repoDir, ['ls-files', '--others', '-z']));
+}
+
+function nulList(out: string): string[] {
+  return out.split('\0').filter(Boolean);
 }
 
 export async function diffAgainst(repoDir: string, ref: string): Promise<string> {

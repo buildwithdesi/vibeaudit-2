@@ -1,4 +1,4 @@
-import { cpSync, existsSync } from 'node:fs';
+import { cpSync, existsSync, rmSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { z } from 'zod';
@@ -25,6 +25,7 @@ import {
   diffAgainst,
   ensureRepo,
   git,
+  untrackedFiles,
 } from './git.ts';
 import { runProjectTests, type TestRunResult } from './project-tests.ts';
 
@@ -78,7 +79,7 @@ export const PatchRecord = z.object({
   ),
   rejectedFiles: z
     .array(z.string())
-    .describe('files a backend changed outside the allowlist; the change was reverted'),
+    .describe('files a backend changed or created outside the allowlist; all were undone'),
   rescan: z.object({
     ran: z.boolean(),
     before: z.object({ total: z.number().int(), byClass: z.record(z.string(), z.number().int()) }),
@@ -200,6 +201,8 @@ export async function runPatchLoop(runDir: string, options: PatchOptions): Promi
           );
         }
       } else if (backend === 'muse-code') {
+        // Untracked files already in the copy (gitignored ones) are not the agent's.
+        const before = new Set(await untrackedFiles(workDir));
         const outcome = await museCodePatch(workDir, selected, {
           model: options.museModel,
           maxSteps: 60,
@@ -210,13 +213,9 @@ export async function runPatchLoop(runDir: string, options: PatchOptions): Promi
         info(`muse code: ${outcome.note.slice(0, 200)}`);
         // The agent edits the tree itself, so the allowlist is enforced afterwards.
         const allowed = new Set(selected.map((f) => f.file.replace(/\\/g, '/')));
-        const changed = await changedFiles(workDir, baseCommit);
-        for (const file of changed) {
-          if (forbiddenPathReason(file) || !allowed.has(file)) {
-            rejectedFiles.push(file);
-            await revertFile(workDir, file); // vibe-audit-ignore perf-no-await-parallel
-          }
-        }
+        rejectedFiles.push(
+          ...(await revertOutsideAllowlist(workDir, branch, baseCommit, allowed, before)),
+        );
         if (rejectedFiles.length)
           warn(
             `reverted ${rejectedFiles.length} file(s) outside the allowlist: ${rejectedFiles.join(', ')}`,
@@ -438,11 +437,30 @@ function siblingsOf(lead: FindingT, pool: readonly FindingT[]): FindingT[] {
   );
 }
 
-/** Put a file back to its committed state; a brand-new file is removed instead. */
-async function revertFile(repoDir: string, file: string): Promise<void> {
-  try {
-    await git(repoDir, ['checkout', '-q', '--', file]);
-  } catch {
-    await git(repoDir, ['rm', '-q', '-f', '--', file]).catch(() => undefined);
+/**
+ * Undo every change an agent made outside the allowlist and return those
+ * paths. Anything the agent staged, committed or switched to is undone
+ * first, keeping its edits in the working tree, so the index is the base
+ * again. New files are deleted before tracked files are restored, so a
+ * folder planted where a tracked file was cannot block the restore.
+ */
+async function revertOutsideAllowlist(
+  repoDir: string,
+  branch: string,
+  baseCommit: string,
+  allowed: ReadonlySet<string>,
+  untrackedBefore: ReadonlySet<string>,
+): Promise<string[]> {
+  await git(repoDir, ['symbolic-ref', 'HEAD', `refs/heads/${branch}`]);
+  await git(repoDir, ['reset', '-q', baseCommit]);
+  const outside = (file: string): boolean =>
+    Boolean(forbiddenPathReason(file)) || !allowed.has(file);
+  const changed = await changedFiles(repoDir, baseCommit);
+  const planted = changed.untracked.filter((file) => !untrackedBefore.has(file) && outside(file));
+  for (const file of planted) rmSync(resolve(repoDir, file), { recursive: true, force: true });
+  const restored = changed.tracked.filter(outside);
+  if (restored.length) {
+    await git(repoDir, ['--literal-pathspecs', 'checkout', '-q', '--', ...restored]);
   }
+  return [...planted, ...restored];
 }
