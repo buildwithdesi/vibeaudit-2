@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { engineVersion, listEngineRules } from './engine/v1.ts';
+import { parseTarget, TargetError } from './intake/target.ts';
 import { VULN_CLASS_IDS } from './model/classes.ts';
 import { museAvailable } from './patch/backends.ts';
 import { runPatchLoop } from './patch/loop.ts';
@@ -43,8 +44,9 @@ Reason options
 
 Patch options
   --backend <auto|api|muse-code>   auto uses the Model API; muse-code runs the Muse Code agent and must be asked for
+  --dry-run              Plan only: write the findings that would be patched to patch.dry-run.json, edit nothing, make no API call
   --run-tests            Run the project's own test script after patching
-  --docker / --no-docker Run those tests in a throwaway node:24 container (default: on when Docker is available)
+  --docker / --no-docker Run those tests in a throwaway node:24-alpine container (default: on when Docker is available)
   --allow-local-tests    Allow the tests to run on this machine when Docker is not available
   --muse-model <id>      Model for Muse Code (default: muse-spark-1.3)
 
@@ -114,10 +116,12 @@ async function main(argv: string[]): Promise<number> {
     case 'scan':
     case 'audit': {
       if (!target) return usageError(`${command} needs a target.`);
-      if (isNonGitHubUrl(target)) {
-        process.stderr.write(
-          `"${target}" is not a github.com URL. Only GitHub repositories can be cloned: pass https://github.com/<owner>/<repo>, <owner>/<repo>, or a local folder.\n`,
-        );
+      // runScan parses it again; parsing here makes a bad target a usage error, before any run folder.
+      try {
+        parseTarget(target);
+      } catch (error) {
+        if (!(error instanceof TargetError)) throw error;
+        process.stderr.write(`${error.message}\n`);
         return 2;
       }
       const contextLines = Number.parseInt(values.context, 10);
@@ -180,22 +184,22 @@ async function main(argv: string[]): Promise<number> {
       }
       const classes = parseClasses(values.classes);
       if (typeof classes === 'number') return classes;
+      const limits = parseLimits(values, 10);
+      if (typeof limits === 'number') return limits;
       const client = clientFromEnv('META');
       const missing = missingPatchBackend(backend, client);
       if (missing && !values['dry-run']) throw new Error(missing);
       if (missing) warn(missing);
-      const maxFindings = Number.parseInt(values['max-findings'] ?? '10', 10);
-      const budgetUsd = Number.parseFloat(values['budget-usd']);
       const record = await runPatchLoop(runDir, {
         backend,
         client,
         museModel: values['muse-model'],
         classes,
-        maxFindings: Number.isFinite(maxFindings) && maxFindings > 0 ? maxFindings : 10,
+        maxFindings: limits.maxFindings,
         runTests: values['run-tests'],
         useDocker: values.docker,
         allowLocalTests: values['allow-local-tests'],
-        budgetUsd: Number.isFinite(budgetUsd) && budgetUsd > 0 ? budgetUsd : 5,
+        budgetUsd: limits.budgetUsd,
         dryRun: values['dry-run'],
       });
       info(
@@ -239,10 +243,36 @@ function reasonOptions(values: {
     process.stderr.write(`--effort must be one of ${[...EFFORTS].join(', ')}.\n`);
     return 2;
   }
-  const maxFindings = Number.parseInt(values['max-findings'] ?? '40', 10);
-  const budgetUsd = Number.parseFloat(values['budget-usd']);
+  const limits = parseLimits(values, 40);
+  if (typeof limits === 'number') return limits;
+  const classes = parseClasses(values.classes);
+  if (typeof classes === 'number') return classes;
+  return {
+    reason: clientFromEnv('META'),
+    triage: values.triage ? clientFromEnv('TRIAGE') : null,
+    dryRun: values['dry-run'],
+    classes,
+    maxFindings: limits.maxFindings,
+    effort: { ...DEFAULT_EFFORT, exploit: values.effort as ReasoningEffort },
+    budget: { perRunUsd: limits.budgetUsd },
+    force: values.force,
+  };
+}
+
+/**
+ * --max-findings and --budget-usd as numbers, or exit code 2. reason, audit
+ * and patch share this, so no command quietly runs on a cap nobody typed.
+ * Number() reads the whole string: parseFloat would take "2,5" as 2.
+ */
+function parseLimits(
+  values: { 'max-findings'?: string | undefined; 'budget-usd': string },
+  defaultMaxFindings: number,
+): { maxFindings: number; budgetUsd: number } | number {
+  const raw = values['max-findings'];
+  const maxFindings = raw === undefined ? defaultMaxFindings : Number(raw);
+  const budgetUsd = Number(values['budget-usd']);
   if (
-    !Number.isFinite(maxFindings) ||
+    !Number.isInteger(maxFindings) ||
     maxFindings < 1 ||
     !Number.isFinite(budgetUsd) ||
     budgetUsd <= 0
@@ -252,18 +282,7 @@ function reasonOptions(values: {
     );
     return 2;
   }
-  const classes = parseClasses(values.classes);
-  if (typeof classes === 'number') return classes;
-  return {
-    reason: clientFromEnv('META'),
-    triage: values.triage ? clientFromEnv('TRIAGE') : null,
-    dryRun: values['dry-run'],
-    classes,
-    maxFindings,
-    effort: { ...DEFAULT_EFFORT, exploit: values.effort as ReasoningEffort },
-    budget: { perRunUsd: budgetUsd },
-    force: values.force,
-  };
+  return { maxFindings, budgetUsd };
 }
 
 /**
@@ -319,20 +338,6 @@ function resolveRunDir(input: string): string {
 function toolVersion(): string {
   const raw = readFileSync(new URL('../package.json', import.meta.url), 'utf8');
   return (JSON.parse(raw) as { version?: string }).version ?? 'unknown';
-}
-
-/**
- * A URL with a scheme whose host is not github.com. Without this, the target
- * parser reads it as a relative path and reports "Folder not found". Every
- * github.com form (https, ssh://git@, git://) is left to the parser, which
- * decides which of them it can clone.
- */
-function isNonGitHubUrl(target: string): boolean {
-  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(target)) return false;
-  if (/^[a-z][a-z0-9+.-]*:\/\/(?:[^@/]*@)?(?:www\.)?github\.com(?:[/:]|$)/i.test(target)) {
-    return false;
-  }
-  return !existsSync(resolve(target));
 }
 
 function usageError(message: string): number {
