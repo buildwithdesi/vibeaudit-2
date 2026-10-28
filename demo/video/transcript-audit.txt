@@ -1,0 +1,23 @@
+$ node src/cli.ts audit https://github.com/buildwithdesi/vibeaudit-2-demo-app --budget-usd 1
+run 20261028T011454Z-buildwithdesi-vibeaudit-2-demo-app-a578
+cloning https://github.com/buildwithdesi/vibeaudit-2-demo-app
+running @jackdog668/vibeaudit 1.4.0 (104 rules available)
+engine: 16 findings in 9 files (264 ms)
+wrote C:\Users\ulilj\repos\vibeaudit-2\runs\20261028T011454Z-buildwithdesi-vibeaudit-2-demo-app-a578
+
+16 findings: 11 critical, 4 warning, 1 info
+top classes: secrets, sql-injection, missing-auth, command-injection, path-traversal
+summary: C:\Users\ulilj\repos\vibeaudit-2\runs\20261028T011454Z-buildwithdesi-vibeaudit-2-demo-app-a578/summary.md
+reasoning over 9 of 16 findings in classes: secrets, sql-injection, missing-auth, command-injection, path-traversal
+repo map: 5 entry points, 0 auth boundaries ($0.0122)
+routes/files.js:10 path-traversal -> confirmed ($0.0114)
+routes/network.js:9 command-injection -> confirmed ($0.0148)
+routes/users.js:9 idor-vulnerability -> confirmed ($0.0145)
+routes/users.js:15 idor-vulnerability -> confirmed ($0.0135)
+routes/users.js:9 sql-injection -> confirmed ($0.0162)
+routes/users.js:15 sql-injection -> confirmed ($0.0157)
+server/config.js:8 exposed-secrets -> not-exploitable ($0.0226)
+server/config.js:7 hardcoded-credentials -> not-exploitable ($0.0200)
+server/config.js:8 hardcoded-credentials -> not-exploitable ($0.0189)
+reasoned 9, triage dropped 0, budget capped 0, errors 0, spent $0.1597 over 10 calls
+report: C:\Users\ulilj\repos\vibeaudit-2\runs\20261028T011454Z-buildwithdesi-vibeaudit-2-demo-app-a578/report.md
