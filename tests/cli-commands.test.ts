@@ -25,6 +25,7 @@ import { scrubbedEnv } from '../src/util/env.ts';
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const CLI = join(ROOT, 'src', 'cli.ts');
 const SEEDED = join(ROOT, 'examples', 'seeded-app');
+const UNREACHABLE = { META_API_KEY: 'dummy', META_BASE_URL: 'https://meta.invalid/v1' };
 
 let work = '';
 let baseRun = '';
@@ -215,4 +216,49 @@ test('--no-triage skips triage even when TRIAGE_* is configured', async () => {
   );
   const record = readJson(join(withoutTriage, 'reasoning.dry-run.json'));
   assert.deepEqual(record.models, { reason: null, triage: null });
+});
+
+test('an unknown --classes value is refused before a scan or any model call', async () => {
+  const runDir = freshRun('classes');
+  const manifestBefore = readFileSync(join(runDir, 'manifest.json'), 'utf8');
+
+  const reason = await cli(['reason', runDir, '--classes', 'sqli,secrets'], UNREACHABLE);
+  assert.equal(reason.code, 2);
+  assert.match(reason.stderr, /Unknown --classes value: sqli\./);
+  assert.match(reason.stderr, /sql-injection/, 'the valid ids are listed');
+  assert.equal(existsSync(join(runDir, 'reasoning.json')), false);
+  assert.equal(readFileSync(join(runDir, 'manifest.json'), 'utf8'), manifestBefore);
+
+  const patch = await cli(['patch', runDir, '--classes', 'sqli'], UNREACHABLE);
+  assert.equal(patch.code, 2);
+  assert.match(patch.stderr, /Unknown --classes value: sqli\./);
+  assert.equal(existsSync(join(runDir, 'patch.json')), false);
+
+  const out = join(work, 'audit-classes');
+  const audit = await cli(['audit', SEEDED, '--out', out, '--classes', 'sqli'], UNREACHABLE);
+  assert.equal(audit.code, 2);
+  assert.match(audit.stderr, /Unknown --classes value: sqli\./);
+  assert.equal(existsSync(out), false, 'audit refuses the flag before it scans');
+
+  const empty = await cli(['reason', runDir, '--classes', ','], UNREACHABLE);
+  assert.equal(empty.code, 2);
+  assert.match(empty.stderr, /--classes needs at least one class/);
+
+  const valid = await cli(['reason', runDir, '--classes', 'secrets', '--dry-run', '--quiet']);
+  assert.equal(valid.code, 0, valid.stderr);
+  const record = readJson(join(runDir, 'reasoning.dry-run.json'));
+  assert.deepEqual(record.classes, ['secrets']);
+});
+
+test('a bad --effort fails audit before it scans', async () => {
+  const runDir = freshRun('effort');
+  const reason = await cli(['reason', runDir, '--effort', 'turbo']);
+  assert.equal(reason.code, 2);
+  assert.match(reason.stderr, /--effort must be one of/);
+
+  const out = join(work, 'audit-effort');
+  const audit = await cli(['audit', SEEDED, '--out', out, '--effort', 'turbo']);
+  assert.equal(audit.code, 2);
+  assert.match(audit.stderr, /--effort must be one of/);
+  assert.equal(existsSync(out), false);
 });

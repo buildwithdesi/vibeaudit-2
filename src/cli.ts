@@ -3,10 +3,11 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { engineVersion, listEngineRules } from './engine/v1.ts';
+import { VULN_CLASS_IDS } from './model/classes.ts';
 import { runPatchLoop } from './patch/loop.ts';
 import { runScan } from './pipeline/run.ts';
 import { clientFromEnv, type ReasoningEffort } from './reason/meta-client.ts';
-import { DEFAULT_EFFORT, runReasoning } from './reason/orchestrate.ts';
+import { DEFAULT_EFFORT, type ReasonOptions, runReasoning } from './reason/orchestrate.ts';
 import { renderProofOfRisk } from './report/proof-of-risk.ts';
 import { topClasses } from './report/summary.ts';
 import { info, setLogLevel } from './util/log.ts';
@@ -123,6 +124,9 @@ async function main(argv: string[]): Promise<number> {
         process.stderr.write('--context must be a number between 0 and 50.\n');
         return 2;
       }
+      // Check the reasoning flags now: a typo should not cost a scan.
+      const audit = command === 'audit' ? reasonOptions(values) : null;
+      if (typeof audit === 'number') return audit;
       const result = await runScan(target, {
         outDir: values.out,
         ref: values.ref ?? null,
@@ -138,8 +142,8 @@ async function main(argv: string[]): Promise<number> {
       info(`top classes: ${topClasses(result.findings).join(', ') || 'none'}`);
       info(`summary: ${result.runDir}/summary.md`);
       if (values.json) process.stdout.write(`${JSON.stringify(result.findings, null, 2)}\n`);
-      if (command === 'scan') return 0;
-      const code = await reason(result.runDir, values);
+      if (!audit) return 0;
+      const code = await reason(result.runDir, audit);
       if (code !== 0) return code;
       await renderProofOfRisk(result.runDir);
       info(`report: ${result.runDir}/report.md`);
@@ -147,7 +151,10 @@ async function main(argv: string[]): Promise<number> {
     }
     case 'reason': {
       if (!target) return usageError('reason needs a run folder.');
-      return reason(resolveRunDir(target), values);
+      const runDir = resolveRunDir(target);
+      const options = reasonOptions(values);
+      if (typeof options === 'number') return options;
+      return reason(runDir, options);
     }
     case 'report': {
       if (!target) return usageError('report needs a run folder.');
@@ -163,18 +170,15 @@ async function main(argv: string[]): Promise<number> {
       if (backend !== 'auto' && backend !== 'api' && backend !== 'muse-code') {
         return usageError('--backend must be auto, api, or muse-code.');
       }
+      const classes = parseClasses(values.classes);
+      if (typeof classes === 'number') return classes;
       const maxFindings = Number.parseInt(values['max-findings'] ?? '10', 10);
       const budgetUsd = Number.parseFloat(values['budget-usd']);
       const record = await runPatchLoop(runDir, {
         backend,
         client: clientFromEnv('META'),
         museModel: values['muse-model'],
-        classes: values.classes
-          ? values.classes
-              .split(',')
-              .map((c) => c.trim())
-              .filter(Boolean)
-          : null,
+        classes,
         maxFindings: Number.isFinite(maxFindings) && maxFindings > 0 ? maxFindings : 10,
         runTests: values['run-tests'],
         useDocker: values.docker,
@@ -200,18 +204,21 @@ async function main(argv: string[]): Promise<number> {
   }
 }
 
-async function reason(
-  runDir: string,
-  values: {
-    'dry-run': boolean;
-    classes?: string | undefined;
-    'max-findings'?: string | undefined;
-    effort: string;
-    'budget-usd': string;
-    triage: boolean;
-    force: boolean;
-  },
-): Promise<number> {
+async function reason(runDir: string, options: ReasonOptions): Promise<number> {
+  const record = await runReasoning(runDir, options);
+  return record.aborted ? 1 : 0;
+}
+
+/** The reasoning flags as options, or exit code 2 after saying which flag is wrong. */
+function reasonOptions(values: {
+  'dry-run': boolean;
+  classes?: string | undefined;
+  'max-findings'?: string | undefined;
+  effort: string;
+  'budget-usd': string;
+  triage: boolean;
+  force: boolean;
+}): ReasonOptions | number {
   if (!EFFORTS.has(values.effort as ReasoningEffort)) {
     process.stderr.write(`--effort must be one of ${[...EFFORTS].join(', ')}.\n`);
     return 2;
@@ -229,22 +236,39 @@ async function reason(
     );
     return 2;
   }
-  const record = await runReasoning(runDir, {
+  const classes = parseClasses(values.classes);
+  if (typeof classes === 'number') return classes;
+  return {
     reason: clientFromEnv('META'),
     triage: values.triage ? clientFromEnv('TRIAGE') : null,
     dryRun: values['dry-run'],
-    classes: values.classes
-      ? values.classes
-          .split(',')
-          .map((c) => c.trim())
-          .filter(Boolean)
-      : null,
+    classes,
     maxFindings,
     effort: { ...DEFAULT_EFFORT, exploit: values.effort as ReasoningEffort },
     budget: { perRunUsd: budgetUsd },
     force: values.force,
-  });
-  return record.aborted ? 1 : 0;
+  };
+}
+
+/**
+ * --classes as known class ids, or null for the default. An unknown id would
+ * select nothing, still pay for the repository map, and leave a reasoning
+ * record the report cannot render, so it is exit code 2 instead.
+ */
+function parseClasses(raw: string | undefined): string[] | null | number {
+  if (!raw) return null;
+  const ids = raw
+    .split(',')
+    .map((c) => c.trim())
+    .filter(Boolean);
+  const known: readonly string[] = VULN_CLASS_IDS;
+  const unknown = ids.filter((id) => !known.includes(id));
+  if (ids.length > 0 && unknown.length === 0) return ids;
+  const problem = unknown.length
+    ? `Unknown --classes value: ${unknown.join(', ')}.`
+    : '--classes needs at least one class.';
+  process.stderr.write(`${problem} Valid classes: ${VULN_CLASS_IDS.join(', ')}.\n`);
+  return 2;
 }
 
 function resolveRunDir(input: string): string {
