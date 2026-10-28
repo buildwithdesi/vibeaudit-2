@@ -73,9 +73,15 @@ export async function runScan(input: string, options: ScanOptions): Promise<Scan
     trustTargetConfig: options.trustTargetConfig,
   });
   assertRuleListComplete(rules.length, engine.output.summary.rulesRun);
+  // Mask each string value, never the serialized text: inside JSON a quote is
+  // escaped as \", and a mask that swallows the backslash corrupts the file.
   await writeJson(
     join(runDir, 'engine-output.json'),
-    JSON.parse(redactSecrets(JSON.stringify(engine.output)).text),
+    JSON.parse(
+      JSON.stringify(engine.output, (_key, value: unknown) =>
+        typeof value === 'string' ? redactSecrets(value).text : value,
+      ),
+    ),
   );
   info(
     `engine: ${engine.output.summary.total} findings in ${engine.output.summary.filesScanned} files (${engine.durationMs} ms)`,
