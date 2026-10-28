@@ -11,8 +11,9 @@ import { setLogLevel } from '../src/util/log.ts';
 
 setLogLevel('quiet');
 
-test('scans the seeded app end to end and finds all five planted classes', async () => {
+test('scans the seeded app end to end and finds all five planted classes', async (t) => {
   const outDir = await mkdtemp(join(tmpdir(), 'va2-run-'));
+  t.after(() => rm(outDir, { recursive: true, force: true }));
   const result = await runScan('examples/seeded-app', {
     outDir,
     ref: null,
