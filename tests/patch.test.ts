@@ -15,11 +15,20 @@ const SQL_BEFORE =
   'const rows = await db.query(`SELECT * FROM users WHERE id = ${req.params.id}`);';
 const EXEC_BEFORE = 'exec(`ping -c 1 ${req.query.host}`, (error, stdout) => {';
 
-/** Copy the seeded app so the loop can create branches and edit files freely. */
+/**
+ * Copy the seeded app so the loop can create branches and edit files freely.
+ * Its own tests never import express, so the dependency is dropped: with no
+ * dependencies the project-test step skips npm install and needs no network.
+ */
 function freshCopy(): string {
   const dir = mkdtempSync(join(tmpdir(), 'va2-patch-'));
-  cpSync('examples/seeded-app', join(dir, 'app'), { recursive: true });
-  return join(dir, 'app');
+  const app = join(dir, 'app');
+  cpSync('examples/seeded-app', app, { recursive: true });
+  const pkgFile = join(app, 'package.json');
+  const pkg = JSON.parse(readFileSync(pkgFile, 'utf8')) as Record<string, unknown>;
+  delete pkg.dependencies;
+  writeFileSync(pkgFile, `${JSON.stringify(pkg, null, 2)}\n`);
+  return app;
 }
 
 /** A fake Muse Spark that knows how to fix the seeded routes with exact edits. */
