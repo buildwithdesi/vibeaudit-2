@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { lstat, readFile } from 'node:fs/promises';
-import { join, resolve, sep } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { z } from 'zod';
 import { VULN_CLASS_IDS, VULN_CLASSES, vulnClass } from '../model/classes.ts';
 import { Finding, type FindingT, RunManifest, type RunManifestT } from '../model/finding.ts';
@@ -82,7 +82,7 @@ export async function renderProofOfRisk(runDir: string): Promise<string> {
       ? join(runDir, 'repo')
       : manifest.target.path;
   const checker = await quoteChecker(repoDir, quoted);
-  const text = render(manifest, findings, reasoning, patch, checker);
+  const text = render(manifest, findings, reasoning, patch, checker, runDir);
   await writeText(join(runDir, 'report.md'), text);
   await writeJson(join(runDir, 'manifest.json'), {
     ...manifest,
@@ -97,6 +97,7 @@ export function render(
   reasoning: ReasoningRecordT | null,
   patch: PatchRecordT | null = null,
   quoteFound: QuoteChecker | null = null,
+  runDir: string | null = null,
 ): string {
   // A typo in --classes is recorded as asked. Unknown ids are dropped so the run still renders.
   const known: readonly string[] = VULN_CLASS_IDS;
@@ -114,27 +115,36 @@ export function render(
   lines.push('');
   lines.push('## The short version');
   lines.push('');
-  if (reasoning && !reasoning.dryRun && reasoned.length > 0) {
+  if (findings.length === 0) {
     lines.push(
-      `The scanner flagged ${findings.length} places. A reasoning model looked closely at ${reasoned.length} of them in the ${classes.length} kinds of problem that matter most. ${confirmed.length} ${confirmed.length === 1 ? 'is' : 'are'} confirmed or likely exploitable. Each one below comes with the lines of code that prove it and the smallest fix.`,
+      manifest.filesScanned === 0
+        ? 'The scanner found no files to check here.'
+        : `The scanner checked ${plural(manifest.filesScanned, 'file')} and found nothing to report. It only knows the patterns it checks for, so this is good news, not a guarantee.`,
     );
+    lines.push('');
   } else {
-    lines.push(
-      `This is a first pass. The scanner flagged ${findings.length} places across ${Object.keys(manifest.counts.byClass).length} kinds of problem. The ${classes.length} kinds below matter most. Nothing here has been checked yet for whether an attacker can really use it. To get a risk rating and proof for each item, run: \`node src/cli.ts reason runs/${manifest.runId}\`.`,
-    );
+    if (reasoning && !reasoning.dryRun && reasoned.length > 0) {
+      lines.push(
+        `The scanner flagged ${findings.length} places. A reasoning model looked closely at ${reasoned.length} of them in the ${classes.length} kinds of problem that matter most. ${confirmed.length} ${confirmed.length === 1 ? 'is' : 'are'} confirmed or likely exploitable. Each one below comes with the lines of code that prove it and the smallest fix.`,
+      );
+    } else {
+      lines.push(
+        `This is a first pass. The scanner flagged ${findings.length} places across ${Object.keys(manifest.counts.byClass).length} kinds of problem. The ${classes.length} kinds below matter most. Nothing here has been checked yet for whether an attacker can really use it. To get a risk rating and proof for each item, run: \`node src/cli.ts reason ${runDir ? runPath(runDir) : `runs/${manifest.runId}`}\`.`,
+      );
+    }
+    lines.push('');
+    fixFirst(lines, classes, findings);
+    lines.push('| Problem | Places | How sure we are | What it means |');
+    lines.push('|---|---|---|---|');
+    for (const id of classes) {
+      const cls = vulnClass(id as never);
+      const inClass = findings.filter((f) => f.vulnClass === id);
+      lines.push(
+        `| ${PLAIN_LABELS[id] ?? cls.name} | ${inClass.length} | ${howSure(inClass)} | ${cls.plain} |`,
+      );
+    }
+    lines.push('');
   }
-  lines.push('');
-  fixFirst(lines, classes, findings);
-  lines.push('| Problem | Places | How sure we are | What it means |');
-  lines.push('|---|---|---|---|');
-  for (const id of classes) {
-    const cls = vulnClass(id as never);
-    const inClass = findings.filter((f) => f.vulnClass === id);
-    lines.push(
-      `| ${PLAIN_LABELS[id] ?? cls.name} | ${inClass.length} | ${howSure(inClass)} | ${cls.plain} |`,
-    );
-  }
-  lines.push('');
 
   for (const id of classes) {
     const cls = vulnClass(id as never);
@@ -158,7 +168,7 @@ export function render(
   lines.push('## How this report was made');
   lines.push('');
   lines.push(
-    `- An automated scan with ${manifest.engine.rulesRun} checks over ${manifest.filesScanned} files (${manifest.engine.name} ${manifest.engine.version}).`,
+    `- An automated scan with ${manifest.engine.rulesRun} checks over ${plural(manifest.filesScanned, 'file')} (${manifest.engine.name} ${manifest.engine.version}).`,
   );
   if (reasoning && !reasoning.dryRun) {
     lines.push(
@@ -268,6 +278,13 @@ function afterPatch(
 /** The plain label, for any id a record may hold, including one this version does not know. */
 function label(id: string): string {
   return PLAIN_LABELS[id] ?? VULN_CLASSES.find((c) => c.id === id)?.name ?? id;
+}
+
+/** The run folder as the user would type it: relative when it sits under the current folder. */
+function runPath(runDir: string): string {
+  const rel = relative(process.cwd(), runDir);
+  const path = rel === '' ? '.' : rel.startsWith('..') || isAbsolute(rel) ? runDir : rel;
+  return /\s/.test(path) ? `"${path}"` : path;
 }
 
 function plural(n: number, word: string): string {

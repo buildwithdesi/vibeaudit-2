@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import type { VulnClassId } from '../src/model/classes.ts';
 import type { FindingT, RunManifestT, SeverityT } from '../src/model/finding.ts';
@@ -324,4 +326,32 @@ test('a patch loop that stopped early says so even when the re-scan ran', () => 
   const text = render(manifest(), demoFindings(), reasoningRecord(DEMO_CLASSES), stopped);
   assert.ok(text.includes('The scan ran again on the patched code'));
   assert.ok(text.includes('the model API answered 402'), 'the stop reason is shown');
+});
+
+test('a scan with no findings says so plainly, with no empty table', () => {
+  const text = render({ ...manifest(), filesScanned: 1 }, [], null);
+  assert.ok(text.includes('The scanner checked 1 file and found nothing to report.'), text);
+  assert.ok(!text.includes('| Problem |'), 'no empty table');
+  assert.ok(!text.includes('Fix first'));
+  assert.ok(!text.includes('0 kinds'));
+  assert.ok(!text.includes('cli.ts reason'), 'nothing to reason about');
+  assert.ok(text.includes('checks over 1 file ('));
+  const empty = render({ ...manifest(), filesScanned: 0 }, [], null);
+  assert.ok(empty.includes('The scanner found no files to check here.'), empty);
+});
+
+test('the first-pass hint names the real run folder', () => {
+  const findings = [finding('s1', 'sql-injection', 'routes/users.js:9')];
+  const inside = join(process.cwd(), 'custom-out', 'r1');
+  assert.ok(
+    render(manifest(), findings, null, null, null, inside).includes(
+      `run: \`node src/cli.ts reason ${join('custom-out', 'r1')}\``,
+    ),
+  );
+  const outside = join(tmpdir(), 'va2-elsewhere', 'r1');
+  assert.ok(
+    render(manifest(), findings, null, null, null, outside).includes(
+      `run: \`node src/cli.ts reason ${outside}\``,
+    ),
+  );
 });
