@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import {
+  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -11,7 +12,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { scrubbedEnv } from '../src/util/env.ts';
@@ -261,4 +262,64 @@ test('a bad --effort fails audit before it scans', async () => {
   assert.equal(audit.code, 2);
   assert.match(audit.stderr, /--effort must be one of/);
   assert.equal(existsSync(out), false);
+});
+
+test('audit without a key still writes the report, and says reasoning was skipped', async () => {
+  const out = join(work, 'audit-nokey');
+  const result = await cli(['audit', SEEDED, '--out', out]);
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stderr, /warning: No META_API_KEY/);
+  const runs = readdirSync(out);
+  assert.equal(runs.length, 1);
+  const runDir = join(out, runs[0] as string);
+  const report = readFileSync(join(runDir, 'report.md'), 'utf8');
+  assert.ok(!report.includes('Winter2026Prod'), 'the report never carries the planted password');
+  assert.equal(existsSync(join(runDir, 'reasoning.json')), false);
+});
+
+test('patch without a backend says what is missing instead of NOT GREEN', async () => {
+  const runDir = freshRun('patch-nokey');
+  const result = await cli(['patch', runDir]);
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /No patch backend\. Set META_API_KEY/);
+  assert.doesNotMatch(result.stderr, /NOT GREEN|still flagged/);
+  assert.equal(existsSync(join(runDir, 'patch.json')), false, 'nothing was attempted');
+
+  // An empty PATH means no muse binary, wherever this test runs.
+  const emptyPath = join(work, 'empty-path');
+  mkdirSync(emptyPath, { recursive: true });
+  const muse = await cli(['patch', runDir, '--backend', 'muse-code'], { PATH: emptyPath });
+  assert.equal(muse.code, 1);
+  assert.match(muse.stderr, /muse CLI not found on PATH/);
+  assert.equal(existsSync(join(runDir, 'patch.json')), false);
+
+  const dry = await cli(['patch', runDir, '--dry-run']);
+  assert.equal(dry.code, 0, dry.stderr);
+  assert.match(dry.stderr, /warning: No patch backend/);
+});
+
+test('patch prints why the project tests did not run', {
+  skip: process.platform === 'win32' && 'the fake muse is a POSIX shell script',
+}, async () => {
+  const runDir = freshRun('patch-tests');
+  // A stand-in for Muse Code that edits one file the patch loop is allowed to change.
+  const bin = join(work, 'fake-muse');
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(
+    join(bin, 'muse'),
+    '#!/bin/sh\necho "// reviewed" >> server/config.js\necho \'{"type":"done"}\'\n',
+  );
+  chmodSync(join(bin, 'muse'), 0o755);
+  const result = await cli(
+    ['patch', runDir, '--backend', 'muse-code', '--run-tests', '--no-docker'],
+    { PATH: `${bin}${delimiter}${process.env.PATH ?? ''}` },
+  );
+  assert.equal(result.code, 1, 'tests that never ran can never be green');
+  assert.match(
+    result.stderr,
+    /warning: project tests not run: tests skipped: Docker is not available and --allow-local-tests was not given/,
+  );
+  const record = readJson(join(runDir, 'patch.json'));
+  assert.equal(record.backend, 'muse-code');
+  assert.ok(record.patchCommit, 'the fake agent edit was committed');
 });

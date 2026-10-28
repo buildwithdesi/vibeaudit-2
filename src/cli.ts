@@ -4,13 +4,14 @@ import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { engineVersion, listEngineRules } from './engine/v1.ts';
 import { VULN_CLASS_IDS } from './model/classes.ts';
+import { museAvailable } from './patch/backends.ts';
 import { runPatchLoop } from './patch/loop.ts';
 import { runScan } from './pipeline/run.ts';
-import { clientFromEnv, type ReasoningEffort } from './reason/meta-client.ts';
+import { type ClientConfig, clientFromEnv, type ReasoningEffort } from './reason/meta-client.ts';
 import { DEFAULT_EFFORT, type ReasonOptions, runReasoning } from './reason/orchestrate.ts';
 import { renderProofOfRisk } from './report/proof-of-risk.ts';
 import { topClasses } from './report/summary.ts';
-import { info, setLogLevel } from './util/log.ts';
+import { info, setLogLevel, warn } from './util/log.ts';
 
 const USAGE = `vibeaudit2 <command> [options]
 
@@ -143,8 +144,15 @@ async function main(argv: string[]): Promise<number> {
       info(`summary: ${result.runDir}/summary.md`);
       if (values.json) process.stdout.write(`${JSON.stringify(result.findings, null, 2)}\n`);
       if (!audit) return 0;
-      const code = await reason(result.runDir, audit);
-      if (code !== 0) return code;
+      if (audit.dryRun || audit.reason) {
+        const code = await reason(result.runDir, audit);
+        if (code !== 0) return code;
+      } else {
+        // The scan is done and the report needs no model, so write it rather than fail.
+        warn(
+          'No META_API_KEY: skipped reasoning, so the report has no exploitability verdicts. Set META_API_KEY in .env for verdicts, or pass --dry-run to save the prompts.',
+        );
+      }
       await renderProofOfRisk(result.runDir);
       info(`report: ${result.runDir}/report.md`);
       return 0;
@@ -172,11 +180,15 @@ async function main(argv: string[]): Promise<number> {
       }
       const classes = parseClasses(values.classes);
       if (typeof classes === 'number') return classes;
+      const client = clientFromEnv('META');
+      const missing = missingPatchBackend(backend, client);
+      if (missing && !values['dry-run']) throw new Error(missing);
+      if (missing) warn(missing);
       const maxFindings = Number.parseInt(values['max-findings'] ?? '10', 10);
       const budgetUsd = Number.parseFloat(values['budget-usd']);
       const record = await runPatchLoop(runDir, {
         backend,
-        client: clientFromEnv('META'),
+        client,
         museModel: values['muse-model'],
         classes,
         maxFindings: Number.isFinite(maxFindings) && maxFindings > 0 ? maxFindings : 10,
@@ -190,6 +202,9 @@ async function main(argv: string[]): Promise<number> {
         `patch record: ${runDir}/patch.json${record.branch ? ` (branch ${record.branch})` : ''}`,
       );
       if (values['dry-run']) return 0;
+      if (values['run-tests'] && record.patchCommit && !record.tests.ran) {
+        warn(`project tests not run: ${record.tests.outputTail}`);
+      }
       if (record.green) return 0;
       if (record.rescanClean) {
         info(
@@ -269,6 +284,25 @@ function parseClasses(raw: string | undefined): string[] | null | number {
     : '--classes needs at least one class.';
   process.stderr.write(`${problem} Valid classes: ${VULN_CLASS_IDS.join(', ')}.\n`);
   return 2;
+}
+
+/**
+ * Why the patch loop would run with no backend, or null when it has one. The
+ * loop itself (resolveBackend) falls back to "none" silently and can then
+ * only report every finding as still flagged.
+ */
+function missingPatchBackend(
+  backend: 'auto' | 'api' | 'muse-code',
+  client: ClientConfig | null,
+): string | null {
+  if (backend === 'muse-code') {
+    return museAvailable()
+      ? null
+      : 'muse CLI not found on PATH. Install Muse Code, or use --backend api with META_API_KEY in .env.';
+  }
+  return client
+    ? null
+    : 'No patch backend. Set META_API_KEY in .env, or pass --backend muse-code with Muse Code installed.';
 }
 
 function resolveRunDir(input: string): string {
