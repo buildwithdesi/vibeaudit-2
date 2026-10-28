@@ -41,6 +41,11 @@ export interface ScanResult {
 export async function runScan(input: string, options: ScanOptions): Promise<ScanResult> {
   const totalStart = performance.now();
   const target = parseTarget(input);
+  // A bad --ref is refused here, before there is a run folder to leave behind.
+  const refTarget =
+    target.kind === 'github' && options.ref
+      ? buildGitHubTarget(target.owner, target.repo, options.ref)
+      : null;
   const runId = makeRunId(target);
   const runDir = resolve(options.outDir, runId);
   await mkdir(runDir, { recursive: true });
@@ -52,9 +57,7 @@ export async function runScan(input: string, options: ScanOptions): Promise<Scan
   let clonedRef: string | null = null;
   let cloneMs = 0;
   if (target.kind === 'github') {
-    const cloneTarget = options.ref
-      ? buildGitHubTarget(target.owner, target.repo, options.ref)
-      : target;
+    const cloneTarget = refTarget ?? target;
     info(`cloning ${cloneTarget.webUrl}${cloneTarget.ref ? ` @ ${cloneTarget.ref}` : ''}`);
     const cloneStart = performance.now();
     // A failed clone leaves nothing worth keeping, so it leaves no run folder either.

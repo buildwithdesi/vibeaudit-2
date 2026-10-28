@@ -121,9 +121,10 @@ test('a URL the target parser cannot read is refused as such, not as a missing f
     'ssh://git@github.example/a/b',
     'https://github.com.evil.example/a/b',
     'https://evil.example/github.com/a/b',
-    'git://github.com/OWASP/NodeGoat',
-    'https://user@github.com/OWASP/NodeGoat',
-    'https://github.com:443/OWASP/NodeGoat',
+    // The owner "-x" is invalid, so even a parser that learned these forms could not clone.
+    'git://github.com/-x/y',
+    'https://user@github.com/-x/y',
+    'https://github.com:443/-x/y',
   ]) {
     const out = join(work, 'not-github');
     const result = await cli(['audit', target, '--out', out]);

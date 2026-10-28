@@ -97,3 +97,18 @@ test('a clone that fails leaves no run folder behind', async () => {
   );
   assert.deepEqual(readdirSync(outDir), []);
 });
+
+test('a ref that is not a safe branch or tag name is refused before a run folder exists', async () => {
+  const outDir = mkdtempSync(join(root, 'out-'));
+  await assert.rejects(
+    runScan('https://github.com/o/r', {
+      outDir,
+      ref: 'a..b',
+      sca: false,
+      trustTargetConfig: false,
+      contextLines: 4,
+    }),
+    /not a safe branch or tag name/,
+  );
+  assert.deepEqual(readdirSync(outDir), []);
+});
