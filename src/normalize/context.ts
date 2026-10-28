@@ -72,7 +72,7 @@ const LITERAL_WORD = /^(?:null|undefined|true|false|none|nil)$/i;
  * index reads, and numbers of up to five digits (`max_tokens: 1024`).
  */
 const CODE_EXPR =
-  /^(?:await|new|require|this|function|async|typeof|yield|string|number|boolean|unknown|any|object)$|^[A-Za-z_$][\w$]*(?:\??\.[A-Za-z_$][\w$]*)+[([]?$|^[A-Za-z_$][\w$.?]*[([]|^(?:\d_?){1,4}\d$/;
+  /^(?:await|new|require|this|function|async|typeof|yield|string|number|boolean|unknown|any|object)$|^[A-Za-z_$][\w$?.]*\.[A-Za-z_$][\w$]*[([]?$|^[A-Za-z_$][\w$.?]*[([]|^\d{1,2}_?\d{3}$|^\d{2,5}$/;
 /** Quoted values that are references, versions or fetch's credentials modes, not secrets. */
 const QUOTED_REFERENCE =
   /^\$\{[^}]*\}$|^\$[A-Z_][A-Z0-9_]*$|^[\^~]?\d+\.\d+\.\d+(?:[-+][\w.]+)?$|^(?:include|omit|same-origin)$/;
