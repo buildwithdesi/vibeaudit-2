@@ -72,6 +72,8 @@ export async function runScan(input: string, options: ScanOptions): Promise<Scan
   const engine = await runEngineScan(repoDir, {
     sca: options.sca,
     trustTargetConfig: options.trustTargetConfig,
+    // Only the user's own folder can hold a config an earlier run parked.
+    recoverParkedConfig: target.kind === 'local',
   });
   assertRuleListComplete(rules.length, engine.output.summary.rulesRun);
   // Mask each string value, never the serialized text: inside JSON a quote is

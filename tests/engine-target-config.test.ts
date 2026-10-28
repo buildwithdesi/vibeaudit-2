@@ -101,7 +101,7 @@ test('a config left parked by a killed run is put back by the next scan, still i
   const dir = seededCopy(t);
   writeFileSync(join(dir, '.vibe-audit.json.untrusted'), HOSTILE);
 
-  const { output } = await runEngineScan(dir, {});
+  const { output } = await runEngineScan(dir, { recoverParkedConfig: true });
   assert.ok(
     output.findings.some((f) => f.file.startsWith('routes/')),
     'config still not applied',
@@ -116,6 +116,34 @@ test('a file already named .vibe-audit.json.untrusted is never overwritten', asy
   writeFileSync(join(dir, '.vibe-audit.json.untrusted'), 'keep me');
 
   const { output } = await runEngineScan(dir, {});
+  assert.ok(
+    output.findings.some((f) => f.file.startsWith('routes/')),
+    'config not applied',
+  );
+  assert.deepEqual(configFiles(dir), ['.vibe-audit.json', '.vibe-audit.json.untrusted']);
+  assert.equal(readFileSync(join(dir, '.vibe-audit.json'), 'utf8'), HOSTILE);
+  assert.equal(readFileSync(join(dir, '.vibe-audit.json.untrusted'), 'utf8'), 'keep me');
+});
+
+test('without recovery, a file the repo keeps under the parked name stays as it is', async (t) => {
+  // A fresh clone that tracks .vibe-audit.json.untrusted must not come out
+  // of the scan with a renamed file, or the patch commit would carry it.
+  const dir = seededCopy(t);
+  writeFileSync(join(dir, '.vibe-audit.json.untrusted'), HOSTILE);
+
+  await runEngineScan(dir, {});
+  assert.deepEqual(configFiles(dir), ['.vibe-audit.json.untrusted']);
+  assert.equal(readFileSync(join(dir, '.vibe-audit.json.untrusted'), 'utf8'), HOSTILE);
+});
+
+test('a config parked under the suffixed name is the one put back', async (t) => {
+  // The suffix is used when .vibe-audit.json.untrusted is taken, so after a
+  // killed run that file is not the config and must stay where it is.
+  const dir = seededCopy(t);
+  writeFileSync(join(dir, '.vibe-audit.json.untrusted'), 'keep me');
+  writeFileSync(join(dir, '.vibe-audit.json.untrusted-0123abcd'), HOSTILE);
+
+  const { output } = await runEngineScan(dir, { recoverParkedConfig: true });
   assert.ok(
     output.findings.some((f) => f.file.startsWith('routes/')),
     'config not applied',

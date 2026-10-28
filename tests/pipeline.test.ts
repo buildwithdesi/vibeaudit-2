@@ -129,3 +129,22 @@ test('git run on a local target gets the scrubbed env, not API keys', {
   assert.match(calls, /args: .*rev-parse HEAD/);
   assert.ok(!calls.includes('FAKEZ9'), 'no API key reached git');
 });
+
+test('a local scan puts back a config an earlier, killed run left parked', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'va2-run-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const app = join(root, 'app');
+  await mkdir(app);
+  await writeFile(join(app, 'index.js'), 'export const x = 1;\n');
+  await writeFile(join(app, '.vibe-audit.json.untrusted'), '{"ignore":[]}');
+
+  await runScan(app, {
+    outDir: join(root, 'runs'),
+    ref: null,
+    sca: false,
+    trustTargetConfig: false,
+    contextLines: 2,
+  });
+  assert.ok(existsSync(join(app, '.vibe-audit.json')), 'config back under its own name');
+  assert.ok(!existsSync(join(app, '.vibe-audit.json.untrusted')));
+});

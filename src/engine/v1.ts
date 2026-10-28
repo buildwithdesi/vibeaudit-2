@@ -1,6 +1,14 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { closeSync, lstatSync, mkdtempSync, openSync, renameSync, rmSync } from 'node:fs';
+import {
+  closeSync,
+  lstatSync,
+  mkdtempSync,
+  openSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+} from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -73,6 +81,12 @@ export interface EngineScanOptions {
   sca?: boolean;
   /** Let the scanned repo's own .vibe-audit.json and inline suppressions apply. Off for untrusted repos. */
   trustTargetConfig?: boolean;
+  /**
+   * Put back a config that a killed earlier run left parked. Only for the
+   * user's own folder: in a fresh clone, a file under the parked name is the
+   * repo's own and must stay as it is.
+   */
+  recoverParkedConfig?: boolean;
   timeoutMs?: number;
 }
 
@@ -95,7 +109,9 @@ export async function runEngineScan(
   // unless the caller opts in.
   // Inline "vibe-audit-ignore" comments are still honored by 1.4.0; that
   // gap is recorded in the README until a v1 release adds a trust switch.
-  const restoreConfig = options.trustTargetConfig ? null : hideTargetConfig(repoDir);
+  const restoreConfig = options.trustTargetConfig
+    ? null
+    : hideTargetConfig(repoDir, options.recoverParkedConfig === true);
   const started = performance.now();
   let result: { stdout: string; stderr: string; exitCode: number };
   try {
@@ -124,18 +140,24 @@ export async function runEngineScan(
 
 const TARGET_CONFIG = '.vibe-audit.json';
 const PARKED_CONFIG = '.vibe-audit.json.untrusted';
+/** The name used when PARKED_CONFIG is taken. Only this tool ever writes it. */
+const PARKED_SUFFIXED = /^\.vibe-audit\.json\.untrusted-[0-9a-f]{8}$/;
 
 /**
  * Park the folder's config under another name for the run. A local target is
  * the user's own folder, so the move is undone however the process ends,
  * Ctrl-C and kill included. A run killed outright (SIGKILL) leaves the file
- * parked; the next scan of that folder puts it back before parking it again.
- * Returns the restore step, or null when there is no config to hide.
+ * parked; with `recover`, the next scan of that folder puts it back before
+ * parking it again. Returns the restore step, or null when there is no
+ * config to hide.
  */
-function hideTargetConfig(repoDir: string): (() => void) | null {
+function hideTargetConfig(repoDir: string, recover: boolean): (() => void) | null {
   const original = join(repoDir, TARGET_CONFIG);
   const parked = join(repoDir, PARKED_CONFIG);
-  if (!present(original) && present(parked)) renameSync(parked, original);
+  if (recover && !present(original)) {
+    const leftover = parkedLeftover(repoDir);
+    if (leftover) renameSync(leftover, original);
+  }
   if (!present(original)) return null;
   // Never overwrite a file that already sits under the parked name.
   const moved = present(parked) ? `${parked}-${randomBytes(4).toString('hex')}` : parked;
@@ -153,6 +175,20 @@ function hideTargetConfig(repoDir: string): (() => void) | null {
     throw error;
   }
   return restore;
+}
+
+/**
+ * The config a killed run left parked. The suffixed name means the plain
+ * parked name was already taken when it was parked, so it wins; two suffixed
+ * names are ambiguous, and both are left alone.
+ */
+function parkedLeftover(repoDir: string): string | null {
+  const suffixed = readdirSync(repoDir).filter((name) => PARKED_SUFFIXED.test(name));
+  if (suffixed.length > 1) return null;
+  const [name] = suffixed;
+  if (name !== undefined) return join(repoDir, name);
+  const parked = join(repoDir, PARKED_CONFIG);
+  return present(parked) ? parked : null;
 }
 
 function present(path: string): boolean {
