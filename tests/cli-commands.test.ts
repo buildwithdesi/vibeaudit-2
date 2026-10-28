@@ -87,7 +87,14 @@ after(() => {
   if (work) rmSync(work, { recursive: true, force: true });
 });
 
-test('no command or an unknown one exits 2 with the usage', async () => {
+test('--help exits 0; no command or an unknown one exits 2 with the usage', async () => {
+  const help = await cli(['--help']);
+  assert.equal(help.code, 0);
+  assert.match(help.stdout, /vibeaudit2 <command>/);
+
+  const scanHelp = await cli(['scan', '--help']);
+  assert.equal(scanHelp.code, 0);
+
   const bare = await cli([]);
   assert.equal(bare.code, 2);
   assert.match(bare.stdout, /vibeaudit2 <command>/);
@@ -95,6 +102,26 @@ test('no command or an unknown one exits 2 with the usage', async () => {
   const unknown = await cli(['bogus']);
   assert.equal(unknown.code, 2);
   assert.match(unknown.stderr, /Unknown command "bogus"/);
+});
+
+test('version prints the tool version and the engine version', async () => {
+  const tool = readJson(join(ROOT, 'package.json')).version as string;
+  const engine = readJson(join(ROOT, 'node_modules', '@jackdog668', 'vibeaudit', 'package.json'))
+    .version as string;
+  const result = await cli(['version']);
+  assert.equal(result.code, 0);
+  assert.equal(result.stdout, `vibeaudit-2 ${tool} (engine ${engine})\n`);
+});
+
+test('a URL outside github.com is refused as such, not as a missing folder', async () => {
+  for (const target of ['https://gitlab.com/a/b', 'ssh://git@github.example/a/b']) {
+    const out = join(work, 'not-github');
+    const result = await cli(['audit', target, '--out', out]);
+    assert.equal(result.code, 2, target);
+    assert.match(result.stderr, /Only GitHub repositories can be cloned/);
+    assert.doesNotMatch(result.stderr, /Folder not found/);
+    assert.equal(existsSync(out), false, 'no run folder for a refused target');
+  }
 });
 
 test('reason without a key exits 1 and says how to fix it; --dry-run needs no key', async () => {

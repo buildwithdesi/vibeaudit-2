@@ -70,6 +70,16 @@ test('the build ships every runtime data file next to the code that reads it', (
   assert.ok(existsSync(join(ROOT, 'dist', 'reason', 'rates.json')));
 });
 
+test('the built CLI prints help and versions', async () => {
+  const help = await bin(['--help']);
+  assert.equal(help.code, 0);
+  assert.match(help.stdout, /vibeaudit2 <command>/);
+
+  const version = await bin(['version']);
+  assert.equal(version.code, 0);
+  assert.match(version.stdout, /^vibeaudit-2 \S+ \(engine \d+\.\d+\.\d+\)\n$/);
+});
+
 test('the built CLI scans, reasons in a dry run, reports, and plans a patch', async () => {
   const out = join(work, 'runs');
   const scan = await bin(['scan', SEEDED, '--out', out, '--quiet']);

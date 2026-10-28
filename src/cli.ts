@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { engineVersion, listEngineRules } from './engine/v1.ts';
@@ -91,12 +91,12 @@ async function main(argv: string[]): Promise<number> {
   const [command, target] = positionals;
   if (values.help || !command) {
     process.stdout.write(USAGE);
-    return command ? 0 : 2;
+    return values.help ? 0 : 2;
   }
 
   switch (command) {
     case 'version': {
-      process.stdout.write(`vibeaudit-2 engine ${await engineVersion()}\n`);
+      process.stdout.write(`vibeaudit-2 ${toolVersion()} (engine ${await engineVersion()})\n`);
       return 0;
     }
     case 'rules': {
@@ -112,6 +112,12 @@ async function main(argv: string[]): Promise<number> {
     case 'scan':
     case 'audit': {
       if (!target) return usageError(`${command} needs a target.`);
+      if (isNonGitHubUrl(target)) {
+        process.stderr.write(
+          `"${target}" is not a github.com URL. Only GitHub repositories can be cloned: pass https://github.com/<owner>/<repo>, <owner>/<repo>, or a local folder.\n`,
+        );
+        return 2;
+      }
       const contextLines = Number.parseInt(values.context, 10);
       if (!Number.isFinite(contextLines) || contextLines < 0 || contextLines > 50) {
         process.stderr.write('--context must be a number between 0 and 50.\n');
@@ -247,6 +253,22 @@ function resolveRunDir(input: string): string {
     throw new Error(`${dir} is not a run folder (no manifest.json). Run "scan" first.`);
   }
   return dir;
+}
+
+/** package.json sits one folder above both src/cli.ts and dist/cli.js. */
+function toolVersion(): string {
+  const raw = readFileSync(new URL('../package.json', import.meta.url), 'utf8');
+  return (JSON.parse(raw) as { version?: string }).version ?? 'unknown';
+}
+
+/**
+ * A URL with a scheme that is not github.com. Without this, the target
+ * parser reads it as a relative path and reports "Folder not found".
+ */
+function isNonGitHubUrl(target: string): boolean {
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(target)) return false;
+  if (/^https?:\/\/(?:www\.)?github\.com\//i.test(target)) return false;
+  return !existsSync(resolve(target));
 }
 
 function usageError(message: string): number {
