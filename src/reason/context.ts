@@ -2,7 +2,7 @@ import type { Dirent } from 'node:fs';
 import { readdir, readFile } from 'node:fs/promises';
 import { basename, extname, join, posix, relative, resolve, sep } from 'node:path';
 import type { FindingT } from '../model/finding.ts';
-import { isSecretFile, redactSecrets, safeResolve } from '../normalize/context.ts';
+import { isSecretFile, redactSecrets, redactValue, safeResolve } from '../normalize/context.ts';
 import type { RepoMapT } from './schemas.ts';
 
 /**
@@ -85,9 +85,10 @@ export async function readPackageJson(repoDir: string): Promise<string | null> {
     ]) {
       if (pkg[key] !== undefined) keep[key] = pkg[key];
     }
+    // Masked value by value so the JSON stays valid, and by key, which no value shows on its own.
     return JSON.stringify(
       keep,
-      (_key, value: unknown) => (typeof value === 'string' ? redactSecrets(value).text : value),
+      (key, value: unknown) => (typeof value === 'string' ? redactValue(key, value).text : value),
       1,
     );
   } catch {

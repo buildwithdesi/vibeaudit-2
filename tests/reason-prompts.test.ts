@@ -205,3 +205,30 @@ test('package.json reaches the repo map as valid JSON with each secret value mas
   assert.equal(parsed.scripts.win, pkg.scripts.win);
   assert.equal(parsed.dependencies.express, '^4.19.2');
 });
+
+test('package.json values are masked by their key name too', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'va2-pkg-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const pkg = {
+    name: 'app',
+    scripts: {
+      api_key: 'Zq8vLr2mNx7tPw4k',
+      'seed:token': 'API_KEY=abcd1234 node seed.js --token Wy3nKp9sQd6tRb2h',
+      'test:auth': 'node --test tests/auth.test.ts',
+    },
+    dependencies: { jsonwebtoken: '^9.0.2' },
+  };
+  writeFileSync(join(dir, 'package.json'), JSON.stringify(pkg), 'utf8');
+  const text = await readPackageJson(dir);
+  assert.ok(text);
+  const parsed = JSON.parse(text) as typeof pkg;
+  // Masked value by value, the value no longer sits next to its key, so the key is read too.
+  assert.ok(!text.includes('Zq8vLr2mNx7tPw4k'), text);
+  assert.equal(parsed.scripts.api_key, '[REDACTED:16]');
+  // An assignment masked inside the value does not stand in for the key's rule.
+  assert.ok(!text.includes('Wy3nKp9sQd6tRb2h'), text);
+  assert.equal(parsed.scripts['seed:token'], `[REDACTED:${pkg.scripts['seed:token'].length}]`);
+  // Keys that only look like credentials keep a command and a version.
+  assert.equal(parsed.scripts['test:auth'], pkg.scripts['test:auth']);
+  assert.equal(parsed.dependencies.jsonwebtoken, '^9.0.2');
+});
