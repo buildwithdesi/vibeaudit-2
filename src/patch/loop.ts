@@ -1,14 +1,15 @@
-import { cpSync, existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { cpSync, existsSync, rmSync } from 'node:fs';
+import { lstat, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { z } from 'zod';
 import { runEngineScan } from '../engine/v1.ts';
 import { Finding, type FindingT, RunManifest } from '../model/finding.ts';
+import { redactSecrets } from '../normalize/context.ts';
 import { countBy, normalizeFindings } from '../normalize/index.ts';
 import { ReasoningBudget, rateFor } from '../reason/budget.ts';
 import { listFiles, relatedSnippets } from '../reason/context.ts';
 import type { ClientConfig } from '../reason/meta-client.ts';
-import { completeStructured } from '../reason/meta-client.ts';
+import { completeStructured, isFatalStatus, ModelApiError } from '../reason/meta-client.ts';
 import { buildExploitabilityMessages } from '../reason/prompts/exploitability.ts';
 import { ExploitVerdict } from '../reason/schemas.ts';
 import { topClasses } from '../report/summary.ts';
@@ -16,7 +17,7 @@ import { writeJson, writeText } from '../util/fs.ts';
 import { info, warn } from '../util/log.ts';
 import { apiPatch, museAvailable, museCodePatch, type PatchOutcome } from './backends.ts';
 import { compareScans, parseUnifiedDiff } from './compare.ts';
-import { forbiddenPathReason } from './edits.ts';
+import { countSuppressions, forbiddenPathReason } from './edits.ts';
 import {
   changedFiles,
   checkout,
@@ -25,6 +26,7 @@ import {
   diffAgainst,
   ensureRepo,
   git,
+  untrackedFiles,
 } from './git.ts';
 import { runProjectTests, type TestRunResult } from './project-tests.ts';
 
@@ -72,13 +74,19 @@ export const PatchRecord = z.object({
       backend: z.enum(['api', 'muse-code']),
       editsApplied: z.number().int(),
       editsRejected: z.number().int(),
+      rejected: z
+        .array(z.string())
+        .default([])
+        .describe('why each rejected edit was rejected, as "file: reason"'),
       note: z.string(),
       usd: z.number(),
     }),
   ),
   rejectedFiles: z
     .array(z.string())
-    .describe('files a backend changed outside the allowlist; the change was reverted'),
+    .describe(
+      'files a backend changed or created outside the allowlist, or where it added a scanner suppression; all were undone',
+    ),
   rescan: z.object({
     ran: z.boolean(),
     before: z.object({ total: z.number().int(), byClass: z.record(z.string(), z.number().int()) }),
@@ -195,11 +203,20 @@ export async function runPatchLoop(runDir: string, options: PatchOptions): Promi
           if (outcome.usage) budget.record(finding.file, outcome.usage, rate);
           outcomes.push(outcome);
           const applied = outcome.edits.filter((e) => e.applied).length;
+          const why = [...new Set(outcome.edits.filter((e) => !e.applied).map((e) => e.reason))];
           info(
-            `${finding.file}:${finding.line ?? '?'} ${finding.ruleId}: ${applied}/${outcome.edits.length} edits applied ($${outcome.usd.toFixed(4)})`,
+            `${finding.file}:${finding.line ?? '?'} ${finding.ruleId}: ${applied}/${outcome.edits.length} edits applied${why.length ? ` (${why.join('; ')})` : ''} ($${outcome.usd.toFixed(4)})`,
           );
+          if (outcome.fatal) {
+            // Every later call would fail the same way. Keep what was applied, stop spending.
+            error = `stopped before spending more: ${outcome.note}`;
+            warn(error);
+            break;
+          }
         }
       } else if (backend === 'muse-code') {
+        // Untracked files already in the copy (gitignored ones) are not the agent's.
+        const before = new Set(await untrackedFiles(workDir));
         const outcome = await museCodePatch(workDir, selected, {
           model: options.museModel,
           maxSteps: 60,
@@ -210,17 +227,22 @@ export async function runPatchLoop(runDir: string, options: PatchOptions): Promi
         info(`muse code: ${outcome.note.slice(0, 200)}`);
         // The agent edits the tree itself, so the allowlist is enforced afterwards.
         const allowed = new Set(selected.map((f) => f.file.replace(/\\/g, '/')));
-        const changed = await changedFiles(workDir, baseCommit);
-        for (const file of changed) {
-          if (forbiddenPathReason(file) || !allowed.has(file)) {
-            rejectedFiles.push(file);
-            await revertFile(workDir, file); // vibe-audit-ignore perf-no-await-parallel
-          }
-        }
+        rejectedFiles.push(
+          ...(await revertOutsideAllowlist(workDir, branch, baseCommit, allowed, before)),
+        );
         if (rejectedFiles.length)
           warn(
             `reverted ${rejectedFiles.length} file(s) outside the allowlist: ${rejectedFiles.join(', ')}`,
           );
+      }
+
+      // Neither backend may close a finding by hiding it from the scanner.
+      const suppressing = await revertAddedSuppressions(workDir, baseCommit);
+      if (suppressing.length) {
+        rejectedFiles.push(...suppressing);
+        warn(
+          `reverted ${suppressing.length} file(s) that add a scanner suppression: ${suppressing.join(', ')}`,
+        );
       }
 
       patchCommit = await commitAll(
@@ -232,9 +254,10 @@ export async function runPatchLoop(runDir: string, options: PatchOptions): Promi
           await git(workDir, ['diff', '--no-ext-diff', '-U0', baseCommit]),
         );
       }
+      // Masked like every other artifact; the exact diff stays on the sandbox branch.
       await writeText(
         join(runDir, 'patch.diff'),
-        patchCommit ? await diffAgainst(workDir, baseCommit) : '',
+        patchCommit ? redactSecrets(await diffAgainst(workDir, baseCommit)).text : '',
       );
 
       if (patchCommit) {
@@ -259,8 +282,9 @@ export async function runPatchLoop(runDir: string, options: PatchOptions): Promi
     error = (caught as Error).message.slice(0, 500);
     warn(`patch loop stopped: ${error}`);
   } finally {
-    if (workDir && baseCommit && manifest.target.kind === 'github') {
-      // Leave the clone on its original commit so a later stage sees the before state.
+    if (workDir && baseCommit) {
+      // Leave the copy on its original commit so a later stage, or a second
+      // patch run, sees the before state. The patch stays on its branch.
       await checkout(workDir, baseCommit).catch(() => undefined);
     }
   }
@@ -278,7 +302,14 @@ export async function runPatchLoop(runDir: string, options: PatchOptions): Promi
   // model re-judges that exact spot with the patch in view. The scanner's
   // verdict and the model's verdict are both recorded, never merged.
   const verification: PatchRecordT['verification'] = [];
-  if (!options.dryRun && workDir && options.client && rate && comparison.remainingPairs.length) {
+  if (
+    !options.dryRun &&
+    error === null &&
+    workDir &&
+    options.client &&
+    rate &&
+    comparison.remainingPairs.length
+  ) {
     const files = await listFiles(workDir);
     for (const { beforeId, after } of comparison.remainingPairs) {
       const decision = budget.canSpend(after.file, 6_000, rate);
@@ -312,6 +343,11 @@ export async function runPatchLoop(runDir: string, options: PatchOptions): Promi
           `verify ${after.file}:${after.line ?? '?'} ${after.ruleId} -> ${result.data.exploitability} ($${usd.toFixed(4)})`,
         );
       } catch (caught) {
+        if (caught instanceof ModelApiError && isFatalStatus(caught.status)) {
+          error = `verification stopped before spending more: ${caught.message.slice(0, 300)}`;
+          warn(error);
+          break;
+        }
         warn(`verification failed for ${beforeId}: ${(caught as Error).message}`);
       }
     }
@@ -348,6 +384,7 @@ export async function runPatchLoop(runDir: string, options: PatchOptions): Promi
       backend: o.backend,
       editsApplied: o.edits.filter((e) => e.applied).length,
       editsRejected: o.edits.filter((e) => !e.applied).length,
+      rejected: rejectionReasons(o),
       note: o.note,
       usd: o.usd,
     })),
@@ -378,14 +415,14 @@ export async function runPatchLoop(runDir: string, options: PatchOptions): Promi
       ).toFixed(4),
     ),
   };
-  await writeJson(join(runDir, 'patch.json'), record);
-  await writeJson(join(runDir, 'manifest.json'), {
-    ...manifest,
-    stages: {
-      ...manifest.stages,
-      patch: options.dryRun ? 'pending' : error ? 'failed' : patchCommit ? 'done' : 'failed',
-    },
-  });
+  // A dry run never overwrites a live record, and never moves the stage.
+  await writeJson(join(runDir, options.dryRun ? 'patch.dry-run.json' : 'patch.json'), record);
+  if (!options.dryRun) {
+    await writeJson(join(runDir, 'manifest.json'), {
+      ...manifest,
+      stages: { ...manifest.stages, patch: error ? 'failed' : patchCommit ? 'done' : 'failed' },
+    });
+  }
   info(
     options.dryRun
       ? `dry run: ${selected.length} findings would be patched with the ${backend} backend`
@@ -431,17 +468,65 @@ function dedupeByLocation(findings: readonly FindingT[]): FindingT[] {
   return [...byKey.values()];
 }
 
+function rejectionReasons(outcome: PatchOutcome): string[] {
+  return outcome.edits.filter((e) => !e.applied).map((e) => `${e.edit.file}: ${e.reason}`);
+}
+
 function siblingsOf(lead: FindingT, pool: readonly FindingT[]): FindingT[] {
   return pool.filter(
     (f) => f !== lead && f.file === lead.file && (f.line ?? 0) === (lead.line ?? 0),
   );
 }
 
-/** Put a file back to its committed state; a brand-new file is removed instead. */
-async function revertFile(repoDir: string, file: string): Promise<void> {
-  try {
-    await git(repoDir, ['checkout', '-q', '--', file]);
-  } catch {
-    await git(repoDir, ['rm', '-q', '-f', '--', file]).catch(() => undefined);
+/**
+ * Undo every change an agent made outside the allowlist and return those
+ * paths. Anything the agent staged, committed or switched to is undone
+ * first, keeping its edits in the working tree, so the index is the base
+ * again. New files are deleted before tracked files are restored, so a
+ * folder planted where a tracked file was cannot block the restore.
+ */
+async function revertOutsideAllowlist(
+  repoDir: string,
+  branch: string,
+  baseCommit: string,
+  allowed: ReadonlySet<string>,
+  untrackedBefore: ReadonlySet<string>,
+): Promise<string[]> {
+  await git(repoDir, ['symbolic-ref', 'HEAD', `refs/heads/${branch}`]);
+  await git(repoDir, ['reset', '-q', baseCommit]);
+  const outside = (file: string): boolean =>
+    Boolean(forbiddenPathReason(file)) || !allowed.has(file);
+  const changed = await changedFiles(repoDir, baseCommit);
+  const planted = changed.untracked.filter((file) => !untrackedBefore.has(file) && outside(file));
+  for (const file of planted) rmSync(resolve(repoDir, file), { recursive: true, force: true });
+  const restored = changed.tracked.filter(outside);
+  if (restored.length) {
+    await git(repoDir, ['--literal-pathspecs', 'checkout', '-q', '--', ...restored]);
   }
+  return [...planted, ...restored];
+}
+
+/**
+ * Put back every changed file whose patch adds vibe-audit-ignore comments and
+ * return those paths. The engine honours the comments, so the re-scan would
+ * read a hidden finding as fixed. Runs for both backends, on the tree itself.
+ */
+async function revertAddedSuppressions(repoDir: string, baseCommit: string): Promise<string[]> {
+  const { tracked } = await changedFiles(repoDir, baseCommit);
+  const checked = await Promise.all(
+    tracked.map(async (file) => {
+      const abs = resolve(repoDir, file);
+      const stat = await lstat(abs).catch(() => null);
+      const after = stat?.isFile() ? await readFile(abs, 'utf8') : '';
+      const before = await git(repoDir, ['cat-file', 'blob', `${baseCommit}:${file}`]).catch(
+        () => '',
+      );
+      return countSuppressions(after) > countSuppressions(before) ? file : null;
+    }),
+  );
+  const suppressing = checked.filter((file) => file !== null);
+  if (suppressing.length) {
+    await git(repoDir, ['--literal-pathspecs', 'checkout', '-q', baseCommit, '--', ...suppressing]);
+  }
+  return suppressing;
 }

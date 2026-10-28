@@ -6,7 +6,12 @@ import { promisify } from 'node:util';
 import type { FindingT } from '../model/finding.ts';
 import { redactSecrets } from '../normalize/context.ts';
 import { costUsd, type Rate, type Usage } from '../reason/budget.ts';
-import { type ClientConfig, completeStructured, ModelApiError } from '../reason/meta-client.ts';
+import {
+  type ClientConfig,
+  completeStructured,
+  isFatalStatus,
+  ModelApiError,
+} from '../reason/meta-client.ts';
 import { scrubbedEnv } from '../util/env.ts';
 import { applyEdits, type EditResult, PatchPlan, type PatchPlanT } from './edits.ts';
 import { buildMuseCodePrompt, buildPatchMessages } from './prompts.ts';
@@ -22,6 +27,8 @@ export interface PatchOutcome {
   note: string;
   usd: number;
   usage: Usage | null;
+  /** The model call failed the way every later call would too: bad key, no credit. */
+  fatal?: boolean;
 }
 
 /**
@@ -103,6 +110,7 @@ export async function apiPatch(
       note: `error: ${(error as Error).message.slice(0, 300)}`,
       usd,
       usage,
+      fatal: error instanceof ModelApiError && isFatalStatus(error.status),
     };
   }
 }

@@ -1,6 +1,4 @@
 import { execFile } from 'node:child_process';
-import { mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { scrubbedEnv } from '../util/env.ts';
 
@@ -8,20 +6,20 @@ const run = promisify(execFile);
 
 /**
  * Git helpers scoped to one working tree, always the pipeline's own copy and
- * never the user's checkout. Hooks are disabled through an empty hooks
- * folder, signing is off, and the tree's own config cannot point git at an
- * external diff or filter program.
+ * never the user's checkout. Hooks are disabled, signing is off, and the
+ * tree's own config cannot point git at an external diff or filter program.
+ *
+ * The hooks path is a regular file, this node binary, so no `<path>/<hook>`
+ * can ever exist. A hooks folder next to the copy could be filled by
+ * anything that writes there, such as a coding agent, and `--no-verify` does
+ * not skip post-commit, post-checkout or reference-transaction hooks.
  */
-async function hooksDir(repoDir: string): Promise<string> {
-  const dir = join(repoDir, '..', 'no-hooks');
-  await mkdir(dir, { recursive: true });
-  return dir;
-}
+const NO_HOOKS = process.execPath;
 
 export async function git(repoDir: string, args: string[], timeoutMs = 60_000): Promise<string> {
   const safety = [
     '-c',
-    `core.hooksPath=${await hooksDir(repoDir)}`,
+    `core.hooksPath=${NO_HOOKS}`,
     '-c',
     'core.fsmonitor=false',
     '-c',
@@ -40,10 +38,14 @@ export async function git(repoDir: string, args: string[], timeoutMs = 60_000): 
   return stdout;
 }
 
+/**
+ * True when the folder is the top of its own work tree, not a folder inside
+ * some other repository. Asked relative to the folder, so a path through a
+ * symlink (a run folder under macOS /tmp) gives the same answer.
+ */
 export async function isGitRepo(repoDir: string): Promise<boolean> {
   try {
-    const top = (await git(repoDir, ['rev-parse', '--show-toplevel'])).trim().replace(/\\/g, '/');
-    return top.toLowerCase() === repoDir.replace(/\\/g, '/').toLowerCase();
+    return (await git(repoDir, ['rev-parse', '--show-cdup'])).trim() === '';
   } catch {
     return false;
   }
@@ -69,12 +71,34 @@ export async function commitAll(repoDir: string, message: string): Promise<strin
   return (await git(repoDir, ['rev-parse', 'HEAD'])).trim();
 }
 
-export async function changedFiles(repoDir: string, ref: string): Promise<string[]> {
-  const out = await git(repoDir, ['diff', '--no-ext-diff', '--name-only', ref]);
-  return out
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean);
+/**
+ * What the working tree changed since `ref`: tracked files that differ, and
+ * every untracked file, gitignored ones included, so a planted .gitignore
+ * cannot hide a new file. Names are read NUL-separated, so none comes back
+ * quoted.
+ */
+export async function changedFiles(
+  repoDir: string,
+  ref: string,
+): Promise<{ tracked: string[]; untracked: string[] }> {
+  const tracked = await git(repoDir, [
+    'diff',
+    '--no-ext-diff',
+    '--no-renames',
+    '--name-only',
+    '-z',
+    ref,
+  ]);
+  return { tracked: nulList(tracked), untracked: await untrackedFiles(repoDir) };
+}
+
+/** Every untracked file, gitignored ones included. */
+export async function untrackedFiles(repoDir: string): Promise<string[]> {
+  return nulList(await git(repoDir, ['ls-files', '--others', '-z']));
+}
+
+function nulList(out: string): string[] {
+  return out.split('\0').filter(Boolean);
 }
 
 export async function diffAgainst(repoDir: string, ref: string): Promise<string> {

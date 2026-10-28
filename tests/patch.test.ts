@@ -4,7 +4,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { applyEdits } from '../src/patch/edits.ts';
-import { runPatchLoop } from '../src/patch/loop.ts';
+import {
+  type PatchOptions,
+  PatchRecord,
+  type PatchRecordT,
+  runPatchLoop,
+} from '../src/patch/loop.ts';
 import { runScan } from '../src/pipeline/run.ts';
 import type { ClientConfig } from '../src/reason/meta-client.ts';
 import { setLogLevel } from '../src/util/log.ts';
@@ -15,11 +20,20 @@ const SQL_BEFORE =
   'const rows = await db.query(`SELECT * FROM users WHERE id = ${req.params.id}`);';
 const EXEC_BEFORE = 'exec(`ping -c 1 ${req.query.host}`, (error, stdout) => {';
 
-/** Copy the seeded app so the loop can create branches and edit files freely. */
+/**
+ * Copy the seeded app so the loop can create branches and edit files freely.
+ * Its own tests never import express, so the dependency is dropped: with no
+ * dependencies the project-test step skips npm install and needs no network.
+ */
 function freshCopy(): string {
   const dir = mkdtempSync(join(tmpdir(), 'va2-patch-'));
-  cpSync('examples/seeded-app', join(dir, 'app'), { recursive: true });
-  return join(dir, 'app');
+  const app = join(dir, 'app');
+  cpSync('examples/seeded-app', app, { recursive: true });
+  const pkgFile = join(app, 'package.json');
+  const pkg = JSON.parse(readFileSync(pkgFile, 'utf8')) as Record<string, unknown>;
+  delete pkg.dependencies;
+  writeFileSync(pkgFile, `${JSON.stringify(pkg, null, 2)}\n`);
+  return app;
 }
 
 /** A fake Muse Spark that knows how to fix the seeded routes with exact edits. */
@@ -46,7 +60,7 @@ function fakePatcher(log: string[]): ClientConfig {
         fixSummary: 'already fixed',
         plainLanguage: 'The patched code closes this path.',
       };
-    } else if (prompt.includes('Location: routes/users.js:9')) {
+    } else if (prompt.includes('routes/users.js:9')) {
       plan = {
         edits: [
           {
@@ -269,4 +283,230 @@ test('dry run plans without touching the tree', async () => {
   assert.equal(record.patchCommit, null);
   assert.ok(record.selected.length > 0);
   assert.equal(readFileSync(join(app, 'routes/users.js'), 'utf8'), before);
+});
+
+/** Scan a fresh copy of the seeded app; returns the run folder. */
+async function scanFresh(prefix: string): Promise<string> {
+  const scan = await runScan(freshCopy(), {
+    outDir: mkdtempSync(join(tmpdir(), prefix)),
+    ref: null,
+    sca: false,
+    trustTargetConfig: false,
+    contextLines: 4,
+  });
+  return scan.runDir;
+}
+
+function loopOptions(client: ClientConfig, overrides: Partial<PatchOptions> = {}): PatchOptions {
+  return {
+    backend: 'api',
+    client,
+    museModel: 'muse-spark-1.3',
+    classes: ['sql-injection'],
+    maxFindings: 1,
+    runTests: false,
+    useDocker: false,
+    allowLocalTests: false,
+    budgetUsd: 5,
+    dryRun: false,
+    ...overrides,
+  };
+}
+
+test('a second patch run on a local target starts again from the snapshot', async () => {
+  const runDir = await scanFresh('va2-patch-rerun-');
+  const first = await runPatchLoop(runDir, loopOptions(fakePatcher([])));
+  assert.ok(first.patchCommit, 'first run commits a patch');
+  const second = await runPatchLoop(runDir, loopOptions(fakePatcher([])));
+  assert.equal(second.baseCommit, first.baseCommit, 'same base commit both times');
+  assert.ok(second.patchCommit, `second run commits a patch: ${JSON.stringify(second.outcomes)}`);
+  assert.ok(readFileSync(join(runDir, 'patch.diff'), 'utf8').includes('$1'), 'diff kept');
+});
+
+test('a dry run never overwrites a live patch record or its stage', async () => {
+  const runDir = await scanFresh('va2-patch-dry-live-');
+  const live = await runPatchLoop(runDir, loopOptions(fakePatcher([])));
+  assert.ok(live.patchCommit);
+  const liveRecord = readFileSync(join(runDir, 'patch.json'), 'utf8');
+  const liveManifest = readFileSync(join(runDir, 'manifest.json'), 'utf8');
+  const dry = await runPatchLoop(runDir, loopOptions(fakePatcher([]), { dryRun: true }));
+  assert.equal(dry.patchCommit, null);
+  assert.equal(readFileSync(join(runDir, 'patch.json'), 'utf8'), liveRecord);
+  assert.equal(readFileSync(join(runDir, 'manifest.json'), 'utf8'), liveManifest);
+  assert.ok(existsSync(join(runDir, 'patch.dry-run.json')), 'the plan is written beside it');
+});
+
+test('edits that add a scanner suppression together are rejected, however they are split', async () => {
+  const dir = freshCopy();
+  const network = join(dir, 'routes/network.js');
+  const original = readFileSync(network, 'utf8');
+  // Two edits, neither of which holds the whole token, assemble it in the file.
+  const split = await applyEdits(
+    dir,
+    [
+      {
+        file: 'routes/network.js',
+        search: EXEC_BEFORE,
+        replace: `${EXEC_BEFORE} // vibe-audit-`,
+        why: 'a',
+      },
+      { file: 'routes/network.js', search: 'audit-\n', replace: 'audit-ignore\n', why: 'b' },
+    ],
+    { allowedFiles: ['routes/network.js'] },
+  );
+  assert.ok(
+    split.every((r) => !r.applied),
+    JSON.stringify(split.map((r) => r.reason)),
+  );
+  assert.equal(readFileSync(network, 'utf8'), original);
+
+  // A search that already holds a suppression cannot carry a second one in.
+  const files = join(dir, 'routes/files.js');
+  writeFileSync(
+    files,
+    readFileSync(files, 'utf8').replace(
+      "import path from 'node:path';",
+      "import path from 'node:path'; // vibe-audit-ignore",
+    ),
+  );
+  const piggyback = await applyEdits(
+    dir,
+    [
+      {
+        file: 'routes/files.js',
+        search: "import path from 'node:path'; // vibe-audit-ignore",
+        replace:
+          "import path from 'node:path'; // vibe-audit-ignore\n// vibe-audit-ignore-next-line",
+        why: 'c',
+      },
+    ],
+    { allowedFiles: ['routes/files.js'] },
+  );
+  assert.equal(piggyback[0]?.applied, false);
+  assert.ok(!readFileSync(files, 'utf8').includes('-next-line'));
+});
+
+/**
+ * Wrap a fake client so calls for one schema (or all) fail with an HTTP
+ * status, after the first `passFirst` of them went through.
+ */
+function failing(
+  client: ClientConfig,
+  status: number,
+  schemaName: string | null,
+  calls: string[],
+  passFirst = 0,
+): ClientConfig {
+  const inner = client.fetchImpl as typeof fetch;
+  let passed = 0;
+  const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+    const name = (
+      JSON.parse(String(init?.body)) as { response_format: { json_schema: { name: string } } }
+    ).response_format.json_schema.name;
+    if ((schemaName === null || name === schemaName) && passed++ >= passFirst) {
+      calls.push(name);
+      return new Response('{"error":"no"}', { status });
+    }
+    return inner(url, init);
+  }) as typeof fetch;
+  return { ...client, fetchImpl, maxRetries: 0 };
+}
+
+test('a 401 from the model stops the patch loop before the next finding is sent', async () => {
+  const runDir = await scanFresh('va2-patch-fatal-');
+  const calls: string[] = [];
+  const answered: string[] = [];
+  const record = await runPatchLoop(
+    runDir,
+    loopOptions(failing(fakePatcher(answered), 401, null, calls, 1), {
+      classes: ['sql-injection', 'command-injection', 'path-traversal'],
+      maxFindings: 10,
+    }),
+  );
+  assert.ok(record.selected.length >= 3, `selected ${record.selected.length}`);
+  assert.equal(answered.length, 1, 'the first finding was answered');
+  assert.equal(calls.length, 1, 'one failed call, then stop: no next finding, no verification');
+  assert.equal(record.outcomes.length, 2);
+  assert.match(record.error ?? '', /401/);
+  assert.equal(record.green, false);
+  const manifest = JSON.parse(readFileSync(join(runDir, 'manifest.json'), 'utf8')) as {
+    stages: { patch: string };
+  };
+  assert.equal(manifest.stages.patch, 'failed');
+});
+
+test('a 402 while re-judging still-flagged findings stops the verification loop', async () => {
+  const runDir = await scanFresh('va2-patch-fatal-verify-');
+  const calls: string[] = [];
+  const record = await runPatchLoop(
+    runDir,
+    loopOptions(failing(fakePatcher([]), 402, 'ExploitVerdict', calls), {
+      classes: ['sql-injection', 'command-injection', 'path-traversal'],
+      maxFindings: 10,
+    }),
+  );
+  assert.ok(record.patchCommit, 'the patch itself went through');
+  assert.ok(record.rescan.remaining.length >= 2, `remaining ${record.rescan.remaining.length}`);
+  assert.equal(calls.length, 1, 'one verification call, then stop');
+  assert.match(record.error ?? '', /402/);
+  assert.equal(record.green, false);
+});
+
+test('the record keeps why each rejected edit was rejected', async () => {
+  const runDir = await scanFresh('va2-patch-reasons-');
+  const stale = (async (_url: string | URL | Request, init?: RequestInit) => {
+    const prompt = (JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> })
+      .messages[1]?.content;
+    const file = /label="location">\n([^:\s]+)/.exec(prompt ?? '')?.[1] ?? '';
+    const plan = {
+      edits: [{ file, search: 'text the file does not have', replace: 'x', why: 'stale' }],
+      newDependencies: [],
+      note: 'A stale edit.',
+      confidence: 0.5,
+    };
+    return new Response(
+      JSON.stringify({
+        choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(plan) } }],
+        usage: { prompt_tokens: 10, completion_tokens: 10 },
+      }),
+      { status: 200 },
+    );
+  }) as typeof fetch;
+  const client = { ...fakePatcher([]), fetchImpl: stale };
+  const record = await runPatchLoop(runDir, loopOptions(client));
+  assert.deepEqual(record.outcomes[0]?.rejected, ['routes/users.js: search text not found']);
+  const saved = JSON.parse(readFileSync(join(runDir, 'patch.json'), 'utf8')) as PatchRecordT;
+  assert.deepEqual(saved.outcomes[0]?.rejected, ['routes/users.js: search text not found']);
+});
+
+test('an older patch record without rejection reasons still loads', () => {
+  const old = JSON.parse(readFileSync('demo/after/patch.json', 'utf8')) as {
+    outcomes: Array<Record<string, unknown>>;
+  };
+  for (const o of old.outcomes) delete o.rejected;
+  assert.deepEqual(PatchRecord.parse(old).outcomes[0]?.rejected, []);
+});
+
+test('patch.diff masks a credential on a context line next to the fix', async () => {
+  const app = freshCopy();
+  const users = join(app, 'routes/users.js');
+  const key = 'sk_live_51PlantedContextKey0000';
+  // Line 12 is the blank line between the two routes: line numbers stay put.
+  const lines = readFileSync(users, 'utf8').split('\n');
+  assert.equal(lines[11], '');
+  lines[11] = `const billingKey = '${key}';`;
+  writeFileSync(users, lines.join('\n'));
+  const scan = await runScan(app, {
+    outDir: mkdtempSync(join(tmpdir(), 'va2-patch-mask-')),
+    ref: null,
+    sca: false,
+    trustTargetConfig: false,
+    contextLines: 4,
+  });
+  const record = await runPatchLoop(scan.runDir, loopOptions(fakePatcher([])));
+  assert.ok(record.patchCommit);
+  const diff = readFileSync(join(scan.runDir, 'patch.diff'), 'utf8');
+  assert.ok(diff.includes('$1'), 'the fix is in the diff');
+  assert.ok(diff.includes('billingKey'), 'the context line is in the diff');
+  assert.ok(!diff.includes(key), 'the credential is masked');
 });
