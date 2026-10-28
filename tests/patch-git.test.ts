@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { checkout, commitAll, createBranch, ensureRepo } from '../src/patch/git.ts';
+import { checkout, commitAll, createBranch, ensureRepo, git, isGitRepo } from '../src/patch/git.ts';
 
 /** A small tree in a run-folder layout: <run>/repo, the way the patch loop lays it out. */
 function runFolder(): { run: string; repo: string } {
@@ -35,4 +35,21 @@ test('no git hook runs, wherever a process in the tree plants one', async (t) =>
   assert.ok(commit, 'the commit still succeeds');
   await checkout(repo, 'HEAD~1');
   assert.equal(existsSync(proof), false, 'a planted hook ran');
+});
+
+test('a repository reached through a symlinked folder is still recognised', async () => {
+  const { run, repo } = runFolder();
+  await ensureRepo(repo);
+  const head = (await git(repo, ['rev-parse', 'HEAD'])).trim();
+  const link = join(mkdtempSync(join(tmpdir(), 'va2-git-link-')), 'run');
+  symlinkSync(run, link, process.platform === 'win32' ? 'junction' : 'dir');
+  const viaLink = join(link, 'repo');
+  assert.equal(await isGitRepo(viaLink), true);
+  await ensureRepo(viaLink);
+  assert.equal((await git(viaLink, ['rev-parse', 'HEAD'])).trim(), head, 'no second snapshot');
+
+  // A plain folder inside another repository is not a repository of its own.
+  const inner = join(repo, 'sub');
+  mkdirSync(inner);
+  assert.equal(await isGitRepo(inner), false);
 });

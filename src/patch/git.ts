@@ -38,10 +38,14 @@ export async function git(repoDir: string, args: string[], timeoutMs = 60_000): 
   return stdout;
 }
 
+/**
+ * True when the folder is the top of its own work tree, not a folder inside
+ * some other repository. Asked relative to the folder, so a path through a
+ * symlink (a run folder under macOS /tmp) gives the same answer.
+ */
 export async function isGitRepo(repoDir: string): Promise<boolean> {
   try {
-    const top = (await git(repoDir, ['rev-parse', '--show-toplevel'])).trim().replace(/\\/g, '/');
-    return top.toLowerCase() === repoDir.replace(/\\/g, '/').toLowerCase();
+    return (await git(repoDir, ['rev-parse', '--show-cdup'])).trim() === '';
   } catch {
     return false;
   }
