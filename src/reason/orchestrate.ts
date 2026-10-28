@@ -63,6 +63,14 @@ export const DEFAULT_EFFORT: ReasonOptions['effort'] = {
 /** Completion caps. Reasoning tokens count against them, so they sit well above the answer size. */
 const OUTPUT_CAP = { map: 16_000, triage: 4_000, exploit: 16_000 };
 
+/**
+ * Completion tokens a dry run expects per call, reasoning included. The map
+ * billed about 2,450 on the live seeded-app run (demo/after/reasoning.json).
+ * Triage has no live sample yet. A verdict uses the budget's
+ * perFindingOutputTokens, so the estimate and the run cap agree.
+ */
+const EXPECTED_OUTPUT = { map: 2_500, triage: 300 };
+
 export const Decision = z.object({
   findingId: z.string(),
   file: z.string(),
@@ -183,7 +191,10 @@ export async function runReasoning(
 
   let aborted: string | null = null;
   try {
-    await buildRepoMap(session, manifest.target.label);
+    // The map only serves new verdicts. When none will be bought, it is not worth a call.
+    if (selected.some((f) => !keepsVerdict(session, f))) {
+      await buildRepoMap(session, manifest.target.label);
+    }
     for (const finding of selected) {
       await judgeFinding(session, finding); // vibe-audit-ignore perf-no-await-parallel
     }
@@ -247,7 +258,7 @@ async function buildRepoMap(session: Session, label: string): Promise<void> {
   });
   if (!(session.live && options.reason)) {
     await writeText(join(session.promptDir, 'repo-map.md'), renderMessages(messages));
-    session.estimatedUsd += estimateCost(messages, 4_000, session.reasonRate);
+    session.estimatedUsd += estimateCost(messages, EXPECTED_OUTPUT.map, session.reasonRate);
     return;
   }
   try {
@@ -275,7 +286,7 @@ async function buildRepoMap(session: Session, label: string): Promise<void> {
 /** Stage 4b and 5 for one finding: triage, then exploitability inside the budget. */
 async function judgeFinding(session: Session, finding: FindingT): Promise<void> {
   const { options, live, budget, decisions } = session;
-  if (live && finding.reasoning && !options.force) {
+  if (keepsVerdict(session, finding)) {
     decisions.push({
       findingId: finding.id,
       file: finding.file,
@@ -317,8 +328,9 @@ async function judgeFinding(session: Session, finding: FindingT): Promise<void> 
 
   if (!(live && options.reason)) {
     await writeText(join(session.promptDir, `exploit-${finding.id}.md`), renderMessages(messages));
-    session.estimatedUsd += estimateCost(messages, 1_200, session.reasonRate);
-    budget.reserve(finding.file, estimatedInput, 1_200, session.reasonRate);
+    const expected = budget.config.perFindingOutputTokens;
+    session.estimatedUsd += estimateCost(messages, expected, session.reasonRate);
+    budget.reserve(finding.file, estimatedInput, expected, session.reasonRate);
     decisions.push({
       findingId: finding.id,
       file: finding.file,
@@ -375,7 +387,7 @@ async function triage(session: Session, finding: FindingT, rate: Rate): Promise<
   });
   if (!(live && options.triage)) {
     await writeText(join(session.promptDir, `triage-${finding.id}.md`), renderMessages(messages));
-    session.estimatedUsd += estimateCost(messages, 300, rate);
+    session.estimatedUsd += estimateCost(messages, EXPECTED_OUTPUT.triage, rate);
     return true;
   }
   if (budget.spentUsd >= budget.config.perRunUsd) {
@@ -418,6 +430,11 @@ async function triage(session: Session, finding: FindingT, rate: Rate): Promise<
     warn(`triage failed for ${finding.id}, keeping it: ${(caught as Error).message}`);
     return true;
   }
+}
+
+/** A live run keeps a verdict an earlier run paid for, unless --force asks for a new one. */
+function keepsVerdict(session: Session, finding: FindingT): boolean {
+  return session.live && finding.reasoning !== null && !session.options.force;
 }
 
 async function persist(session: Session): Promise<void> {
