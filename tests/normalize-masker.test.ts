@@ -53,6 +53,47 @@ test('masks the credential shapes real repos leak', () => {
   assert.ok(!shopify.includes(HEX), shopify);
 });
 
+test('masks values with escapes, auth values, config-file values and cut-off quotes', () => {
+  const leaks = [
+    // A quoted value may carry escape pairs.
+    `const DB_PASSWORD = "p@ss\\\\w0rd${M}";`,
+    `export DB_PASSWORD="Pa\\$\\$w0rd${M}"`,
+    `      POSTGRES_PASSWORD: "Pa\\$\\$${M}word"`,
+    `token = "abc\\u0041${M}def"`,
+    `const password = "abc\\n${M}def";`,
+    `password: "C:\\\\Users\\\\${M}pw"`,
+    // `auth` alone names a credential.
+    `const options = { hostname: 'api.example.com', auth: 'admin:${M}pw123' };`,
+    `http.get({ host, auth: "deploy:${M}abcdef" }, cb)`,
+    `"auths": {"https://index.docker.io/v1/": {"auth": "${M}dXNlcjpwYXNz=="}}`,
+    `_auth=${M}abcdefgh`,
+    `basic_auth: 'admin:${M}pw'`,
+    // YAML, compose and .properties values that look like member chains.
+    `password: Winter2024.${M}`,
+    `  password: secret.${M}`,
+    `  password: secret.${M}  # prod`,
+    `      POSTGRES_PASSWORD: Winter.${M}x`,
+    `   12    password: Winter.${M}x`,
+    `- password: Winter.${M}x`,
+    `spring.datasource.password=Winter.${M}x`,
+    `  client_secret: abc123.${M}xyz`,
+    `API_KEY: ${M}abcdef.ghij`,
+    `password = Winter2024.${M}`,
+    // Evidence cut off before the closing quote.
+    `const dbPassword = "Super${M}SecretPasswordThatIsCutOffBy120`,
+    `{ password: '${M}abcdefgh`,
+  ];
+  for (const line of leaks) {
+    const { text, redacted } = redactSecrets(line);
+    assert.ok(!text.includes(M), `leaked: ${text}`);
+    assert.equal(redacted, true, line);
+  }
+  // Short numbers stay code, except under a password name.
+  for (const line of ['password: 12345', '  pin_password: 4821', 'DB_SECRET: 90210']) {
+    assert.ok(!/\d{4}/.test(redactSecrets(line).text), line);
+  }
+});
+
 test('leaves ordinary auth code, env lookups, versions and small numbers alone', () => {
   const code = [
     'const token = req.headers.authorization;',
@@ -81,6 +122,24 @@ test('leaves ordinary auth code, env lookups, versions and small numbers alone',
     "password: '${DB_PASSWORD}'",
     '// verify the token signature before trusting claims',
     'const primary_key = "id";',
+    // `auth` settings and code, as opposed to `auth` credentials.
+    'const options = { hostname, auth: requireAuth };',
+    "server.route({ method: 'GET', path: '/me', options: { auth: 'session' } });",
+    'auth: authOptions',
+    'r = requests.get(url, auth=(user, password))',
+    'auth = HTTPBasicAuth(user, password)',
+    'auth = "Basic " + credentials',
+    "grant_type = 'urn:ietf:params:oauth:grant-type:jwt-bearer'",
+    // A quote that ends a string is not the start of a value.
+    'print("shlex: token=" + repr(raw))',
+    "def unix_getpass(prompt='Password: ', stream=None):",
+    // Member chains in code, including at the end of a line.
+    'password = settings.DB_PASSWORD',
+    'self.secret = config.secret',
+    '  password: user.password,',
+    'consumer_name="launchpad", access_token=self.token',
+    '  max_tokens: 4096',
+    'passwordResetExpiry: 3600,',
   ];
   for (const line of code) {
     assert.equal(redactSecrets(line).text, line);
@@ -92,6 +151,8 @@ test('escaped text keeps its escapes, so masked JSON still parses', () => {
     evidence: `fetch("https://api.example.com/data?token=${M}abcd1234")`,
     script: `API_KEY="${M}abcd1234" node deploy.js`,
     note: `see token=${M}abcd"`,
+    pair: String.raw`secret = 'ab\cd${M}'`,
+    cut: `password = 'abc${M}`,
     a: 'postgres://u:',
     b: 'x@host',
   });
