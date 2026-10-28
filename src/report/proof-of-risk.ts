@@ -1,9 +1,9 @@
-import { readFileSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { lstat, readFile } from 'node:fs/promises';
+import { join, resolve, sep } from 'node:path';
 import { z } from 'zod';
 import { VULN_CLASS_IDS, vulnClass } from '../model/classes.ts';
 import { Finding, type FindingT, RunManifest, type RunManifestT } from '../model/finding.ts';
+import { isSecretFile, safeResolve } from '../normalize/context.ts';
 import { PatchRecord, type PatchRecordT } from '../patch/loop.ts';
 import { ReasoningRecord, type ReasoningRecordT } from '../reason/orchestrate.ts';
 import { writeJson, writeText } from '../util/fs.ts';
@@ -50,7 +50,8 @@ const POSITION_WORDS: Record<string, string> = {
   none: 'no one, based on what the code shows',
 };
 
-export type QuoteChecker = (file: string, quote: string) => boolean;
+/** True when the quote is in the file, false when it is not, null when the file was not checked. */
+export type QuoteChecker = (file: string, quote: string) => boolean | null;
 
 export async function renderProofOfRisk(runDir: string): Promise<string> {
   const manifest = RunManifest.parse(
@@ -73,7 +74,9 @@ export async function renderProofOfRisk(runDir: string): Promise<string> {
   } catch {
     patch = null;
   }
-  const text = render(manifest, findings, reasoning, patch, quoteChecker(manifest.target.path));
+  const quoted = findings.flatMap((f) => f.reasoning?.evidence.map((e) => e.file) ?? []);
+  const checker = await quoteChecker(manifest.target.path, quoted);
+  const text = render(manifest, findings, reasoning, patch, checker);
   await writeText(join(runDir, 'report.md'), text);
   await writeJson(join(runDir, 'manifest.json'), {
     ...manifest,
@@ -329,23 +332,46 @@ function dedupeLocations(findings: readonly FindingT[]): FindingT[] {
   return [...seen.values()];
 }
 
-/** Checks a quoted line against the real file, whitespace-insensitive, so a made-up quote is flagged. */
-export function quoteChecker(repoDir: string): QuoteChecker {
-  const cache = new Map<string, string | null>();
+/**
+ * Checks a quoted line against the real file, whitespace-insensitive, so a
+ * made-up quote is flagged. The paths come from the model, so files are read
+ * through the same guard as the code context: a path outside the repo cannot
+ * hold the quote, and a symlink, an oversized file or a secret-bearing file is
+ * never read, so its quotes are not checked.
+ */
+export async function quoteChecker(
+  repoDir: string,
+  files: Iterable<string>,
+): Promise<QuoteChecker> {
+  const root = resolve(repoDir);
+  const keys = [...new Set([...files].map((f) => f.replace(/\\/g, '/')))];
+  const texts = await Promise.all(keys.map((key) => readForQuotes(root, key)));
+  const cache = new Map(keys.map((key, i) => [key, texts[i] ?? null]));
   return (file, quote) => {
-    const key = file.replace(/\\/g, '/');
-    if (!cache.has(key)) {
-      try {
-        cache.set(key, readFileSync(join(repoDir, key), 'utf8').replace(/\s+/g, ''));
-      } catch {
-        cache.set(key, null);
-      }
-    }
-    const content = cache.get(key);
-    if (content === null || content === undefined) return false;
+    const content = cache.get(file.replace(/\\/g, '/'));
+    if (content === null || content === undefined) return null;
     const needle = quote.replace(/\s+/g, '');
     return needle.length > 0 && content.includes(needle);
   };
+}
+
+/** The file with whitespace removed; '' when it cannot hold the quote; null when it is not checked. */
+async function readForQuotes(root: string, key: string): Promise<string | null> {
+  const lexical = resolve(root, key);
+  if (lexical !== root && !lexical.startsWith(root + sep)) return '';
+  if (isSecretFile(key)) return null;
+  const abs = await safeResolve(root, key);
+  if (abs) {
+    return readFile(abs, 'utf8').then(
+      (text) => text.replace(/\s+/g, ''),
+      () => null,
+    );
+  }
+  // Missing: the quote cannot be there. Present but refused: not checked.
+  return lstat(lexical).then(
+    () => null,
+    () => '',
+  );
 }
 
 function rank(f: FindingT): number {
