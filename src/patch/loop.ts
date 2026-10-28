@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 import { z } from 'zod';
 import { runEngineScan } from '../engine/v1.ts';
 import { Finding, type FindingT, RunManifest } from '../model/finding.ts';
+import { redactSecrets } from '../normalize/context.ts';
 import { countBy, normalizeFindings } from '../normalize/index.ts';
 import { ReasoningBudget, rateFor } from '../reason/budget.ts';
 import { listFiles, relatedSnippets } from '../reason/context.ts';
@@ -253,9 +254,10 @@ export async function runPatchLoop(runDir: string, options: PatchOptions): Promi
           await git(workDir, ['diff', '--no-ext-diff', '-U0', baseCommit]),
         );
       }
+      // Masked like every other artifact; the exact diff stays on the sandbox branch.
       await writeText(
         join(runDir, 'patch.diff'),
-        patchCommit ? await diffAgainst(workDir, baseCommit) : '',
+        patchCommit ? redactSecrets(await diffAgainst(workDir, baseCommit)).text : '',
       );
 
       if (patchCommit) {

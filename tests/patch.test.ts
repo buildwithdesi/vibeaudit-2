@@ -486,3 +486,27 @@ test('an older patch record without rejection reasons still loads', () => {
   for (const o of old.outcomes) delete o.rejected;
   assert.deepEqual(PatchRecord.parse(old).outcomes[0]?.rejected, []);
 });
+
+test('patch.diff masks a credential on a context line next to the fix', async () => {
+  const app = freshCopy();
+  const users = join(app, 'routes/users.js');
+  const key = 'sk_live_51PlantedContextKey0000';
+  // Line 12 is the blank line between the two routes: line numbers stay put.
+  const lines = readFileSync(users, 'utf8').split('\n');
+  assert.equal(lines[11], '');
+  lines[11] = `const billingKey = '${key}';`;
+  writeFileSync(users, lines.join('\n'));
+  const scan = await runScan(app, {
+    outDir: mkdtempSync(join(tmpdir(), 'va2-patch-mask-')),
+    ref: null,
+    sca: false,
+    trustTargetConfig: false,
+    contextLines: 4,
+  });
+  const record = await runPatchLoop(scan.runDir, loopOptions(fakePatcher([])));
+  assert.ok(record.patchCommit);
+  const diff = readFileSync(join(scan.runDir, 'patch.diff'), 'utf8');
+  assert.ok(diff.includes('$1'), 'the fix is in the diff');
+  assert.ok(diff.includes('billingKey'), 'the context line is in the diff');
+  assert.ok(!diff.includes(key), 'the credential is masked');
+});
