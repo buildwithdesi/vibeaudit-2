@@ -77,9 +77,13 @@ const CODE_EXPR =
 const QUOTED_REFERENCE =
   /^\$\{[^}]*\}$|^\$[A-Z_][A-Z0-9_]*$|^[\^~]?\d+\.\d+\.\d+(?:[-+][\w.]+)?$|^(?:include|omit|same-origin)$/;
 
-/** Files that are secrets by nature. Their content is never read into context at all. */
+/**
+ * Files that are secrets by nature. Their content is never read into context
+ * at all. Credential and secrets files count only with a data extension (or
+ * none), so source such as credentials.ts or lib/secrets.ts stays readable.
+ */
 const SECRET_FILE =
-  /^(?:\.env(?:\..*)?|\.npmrc|\.netrc|id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?|.*\.(?:pem|key|p12|pfx|jks|keystore))$/i;
+  /^(?:\.env(?:\..*)?|.+\.env|\.envrc|\.dev\.vars|env\.local|\.npmrc|\.netrc|\.git-credentials|\.pypirc|\.htpasswd|id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?|.*\.(?:pem|key|p12|pfx|jks|keystore)|.*credentials?(?:\.(?:json|ya?ml|toml|ini|txt|xml))?|.*service[-_]?account.*\.json|.*secrets?\.(?:json|ya?ml|toml|ini|txt|env))$/i;
 
 export function isSecretFile(file: string): boolean {
   return SECRET_FILE.test(basename(file.replace(/\\/g, '/')));
