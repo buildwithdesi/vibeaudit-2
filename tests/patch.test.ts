@@ -37,7 +37,8 @@ function freshCopy(): string {
 }
 
 /** A fake Muse Spark that knows how to fix the seeded routes with exact edits. */
-function fakePatcher(log: string[]): ClientConfig {
+/** With `truncateVerdicts`, every re-check answer stops at the output cap: billed, unusable. */
+function fakePatcher(log: string[], truncateVerdicts = false): ClientConfig {
   const fetchImpl = (async (_url: string | URL | Request, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body)) as {
       messages: Array<{ content: string }>;
@@ -103,10 +104,12 @@ function fakePatcher(log: string[]): ClientConfig {
         confidence: 0.3,
       };
     }
+    const verdict = body.response_format.json_schema.name === 'ExploitVerdict';
+    const finish = truncateVerdicts && verdict ? 'length' : 'stop';
     return new Response(
       JSON.stringify({
         model: 'muse-spark-1.3',
-        choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(plan) } }],
+        choices: [{ finish_reason: finish, message: { content: JSON.stringify(plan) } }],
         usage: { prompt_tokens: 1500, completion_tokens: 200 },
       }),
       { status: 200 },
@@ -196,7 +199,7 @@ test('edits apply only on the allowlist, atomically per file, matching the file 
   );
 });
 
-test('patch loop: branch, exact edits, re-scan shows findings gone, project tests pass', async () => {
+test('patch loop: branch, exact edits, findings closed by re-scan or re-check, project tests pass', async () => {
   const app = freshCopy();
   const outDir = mkdtempSync(join(tmpdir(), 'va2-patch-run-'));
   const scan = await runScan(app, {
@@ -509,4 +512,38 @@ test('patch.diff masks a credential on a context line next to the fix', async ()
   assert.ok(diff.includes('$1'), 'the fix is in the diff');
   assert.ok(diff.includes('billingKey'), 'the context line is in the diff');
   assert.ok(!diff.includes(key), 'the credential is masked');
+});
+
+test('patch loop: a billed but unusable re-check is charged and never counts as closed', async () => {
+  const app = freshCopy();
+  const outDir = mkdtempSync(join(tmpdir(), 'va2-patch-run-'));
+  const scan = await runScan(app, {
+    outDir,
+    ref: null,
+    sca: false,
+    trustTargetConfig: false,
+    contextLines: 4,
+  });
+  const record = await runPatchLoop(scan.runDir, {
+    backend: 'api',
+    client: fakePatcher([], true),
+    museModel: 'muse-spark-1.3',
+    classes: ['sql-injection', 'command-injection'],
+    maxFindings: 10,
+    runTests: false,
+    useDocker: false,
+    allowLocalTests: false,
+    budgetUsd: 5,
+    dryRun: false,
+  });
+
+  assert.ok(record.rescan.remaining.length > 0, 'a rule still fires, so a re-check is bought');
+  assert.equal(record.verification.length, 0, 'no usable re-check answer');
+  assert.equal(record.verifiedClean, false);
+  // Each unusable re-check bills 1,500 input and 200 output tokens: about $0.0027.
+  const answered = record.outcomes.reduce((n, o) => n + o.usd, 0);
+  assert.ok(
+    record.usd - answered >= 0.0025,
+    `re-check spend charged: ${record.usd} vs ${answered} for the answered patch calls`,
+  );
 });

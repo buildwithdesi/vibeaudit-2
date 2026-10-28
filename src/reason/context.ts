@@ -85,7 +85,11 @@ export async function readPackageJson(repoDir: string): Promise<string | null> {
     ]) {
       if (pkg[key] !== undefined) keep[key] = pkg[key];
     }
-    return redactSecrets(JSON.stringify(keep, null, 1)).text;
+    return JSON.stringify(
+      keep,
+      (_key, value: unknown) => (typeof value === 'string' ? redactSecrets(value).text : value),
+      1,
+    );
   } catch {
     return null;
   }

@@ -240,7 +240,7 @@ export async function runReasoning(
   info(
     options.dryRun
       ? `dry run: ${reasoned} prompts written to ${session.promptDir}, estimated $${session.estimatedUsd.toFixed(2)}`
-      : `reasoned ${reasoned}, triage dropped ${dropped}, budget capped ${capped}, errors ${errors}, spent $${session.budget.spentUsd.toFixed(4)} over ${session.budget.callCount} calls${aborted ? ' (aborted)' : ''}`,
+      : `reasoned ${reasoned}, ${options.triage ? `triage dropped ${dropped}` : 'triage off'}, budget capped ${capped}, errors ${errors}, spent $${session.budget.spentUsd.toFixed(4)} over ${session.budget.callCount} calls${aborted ? ' (aborted)' : ''}`,
   );
   return record;
 }

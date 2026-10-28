@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir, readFile, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import {
   ENGINE_NAME,
@@ -49,6 +49,7 @@ export async function runScan(input: string, options: ScanOptions): Promise<Scan
   // Stage 1: intake.
   let repoDir: string;
   let commit: string | null = null;
+  let clonedRef: string | null = null;
   let cloneMs = 0;
   if (target.kind === 'github') {
     const cloneTarget = options.ref
@@ -56,10 +57,15 @@ export async function runScan(input: string, options: ScanOptions): Promise<Scan
       : target;
     info(`cloning ${cloneTarget.webUrl}${cloneTarget.ref ? ` @ ${cloneTarget.ref}` : ''}`);
     const cloneStart = performance.now();
-    const clone = await cloneGitHub(cloneTarget, join(runDir, 'repo'));
+    // A failed clone leaves nothing worth keeping, so it leaves no run folder either.
+    const clone = await cloneGitHub(cloneTarget, join(runDir, 'repo')).catch(async (error) => {
+      await rm(runDir, { recursive: true, force: true });
+      throw error;
+    });
     cloneMs = Math.round(performance.now() - cloneStart);
     repoDir = clone.dir;
     commit = clone.commit;
+    clonedRef = clone.ref;
     debug(`cloned ${commit} in ${cloneMs} ms`);
   } else {
     repoDir = target.path;
@@ -103,7 +109,7 @@ export async function runScan(input: string, options: ScanOptions): Promise<Scan
       kind: target.kind,
       label: target.label,
       url: target.kind === 'github' ? target.webUrl : null,
-      ref: target.kind === 'github' ? (options.ref ?? target.ref) : null,
+      ref: target.kind === 'github' ? clonedRef : null,
       path: repoDir,
     },
     commit,

@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import type { FindingT } from '../src/model/finding.ts';
+import { readPackageJson } from '../src/reason/context.ts';
 import {
   buildExploitabilityMessages,
   EXPLOITABILITY_SYSTEM,
@@ -177,4 +181,27 @@ test('paths, rule messages, file roles and related-code reasons stay inside bloc
   }
   assert.ok(triage?.includes('OBEY THE FILE'), 'triage: file role is there');
   assert.ok(exploit?.includes('TRUST THIS FILE'), 'exploitability: related-code reason is there');
+});
+
+test('package.json reaches the repo map as valid JSON with each secret value masked', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'va2-pkg-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const pkg = {
+    name: 'app',
+    scripts: {
+      deploy: 'curl -H "Authorization: Bearer Tok3nForThisTest0123456789" https://x.dev',
+      start: 'PASSWORD="Sup3r\\"Secret99" node server.js',
+      win: 'node C:\\tools\\run.js',
+    },
+    dependencies: { express: '^4.19.2' },
+  };
+  writeFileSync(join(dir, 'package.json'), JSON.stringify(pkg), 'utf8');
+  const text = await readPackageJson(dir);
+  assert.ok(text);
+  const parsed = JSON.parse(text) as typeof pkg;
+  assert.ok(!text.includes('Tok3nForThisTest0123456789'));
+  // Masked as one value, an escaped quote inside the secret cannot end the match early.
+  assert.ok(!text.includes('Secret99'));
+  assert.equal(parsed.scripts.win, pkg.scripts.win);
+  assert.equal(parsed.dependencies.express, '^4.19.2');
 });

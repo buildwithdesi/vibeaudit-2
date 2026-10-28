@@ -46,7 +46,7 @@ const PASS_THROUGH = [
 
 let emptyConfigDir: string | null = null;
 
-/** Path to an empty npm config file, one per role, so neither the repo's .npmrc nor the user's applies. */
+/** Path to an empty npm config file, one per role, so neither the user's nor the global npm config applies. A project .npmrc in the scanned repo still does. */
 export function emptyNpmConfig(role: 'user' | 'global' = 'user'): string {
   if (!emptyConfigDir) {
     // One folder per process, removed however the process ends. The removal

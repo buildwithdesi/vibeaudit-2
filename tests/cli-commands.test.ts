@@ -319,6 +319,9 @@ test('patch without a backend says what is missing instead of NOT GREEN', async 
   const dry = await cli(['patch', runDir, '--dry-run']);
   assert.equal(dry.code, 0, dry.stderr);
   assert.match(dry.stderr, /warning: No patch backend/);
+  // A dry run writes its own record, and the CLI points at that file.
+  assert.match(dry.stderr, /patch record: .*patch\.dry-run\.json/);
+  assert.ok(existsSync(join(runDir, 'patch.dry-run.json')));
 });
 
 test('patch prints why the project tests did not run', {

@@ -38,9 +38,10 @@ import { runProjectTests, type TestRunResult } from './project-tests.ts';
  *
  * The user's checkout is never touched: a GitHub target is already the
  * pipeline's clone, and a local folder is copied into the run folder first.
- * "Green" means the re-scan no longer reports the patched findings, nothing
- * new appeared, and the project's own tests ran and passed. Without tests
- * the result is at best "re-scan clean", never green.
+ * "Green" means nothing new appeared, every patched finding is either gone
+ * from the re-scan or re-judged not exploitable (or unlikely) by the model on
+ * the patched code, and the project's own tests ran and passed. Without tests
+ * the result is at best "closed", never green.
  */
 export interface PatchOptions {
   backend: 'auto' | 'api' | 'muse-code';
@@ -302,6 +303,8 @@ export async function runPatchLoop(runDir: string, options: PatchOptions): Promi
   // model re-judges that exact spot with the patch in view. The scanner's
   // verdict and the model's verdict are both recorded, never merged.
   const verification: PatchRecordT['verification'] = [];
+  // A call that reached the model but came back unusable is still billed.
+  let failedUsd = 0;
   if (
     !options.dryRun &&
     error === null &&
@@ -343,6 +346,9 @@ export async function runPatchLoop(runDir: string, options: PatchOptions): Promi
           `verify ${after.file}:${after.line ?? '?'} ${after.ruleId} -> ${result.data.exploitability} ($${usd.toFixed(4)})`,
         );
       } catch (caught) {
+        if (caught instanceof ModelApiError && caught.usage) {
+          failedUsd += budget.record(after.file, caught.usage, rate);
+        }
         if (caught instanceof ModelApiError && isFatalStatus(caught.status)) {
           error = `verification stopped before spending more: ${caught.message.slice(0, 300)}`;
           warn(error);
@@ -411,7 +417,9 @@ export async function runPatchLoop(runDir: string, options: PatchOptions): Promi
     error,
     usd: Number(
       (
-        outcomes.reduce((n, o) => n + o.usd, 0) + verification.reduce((n, v) => n + v.usd, 0)
+        outcomes.reduce((n, o) => n + o.usd, 0) +
+        verification.reduce((n, v) => n + v.usd, 0) +
+        failedUsd
       ).toFixed(4),
     ),
   };

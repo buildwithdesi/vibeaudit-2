@@ -199,7 +199,7 @@ async function main(argv: string[]): Promise<number> {
         dryRun: values['dry-run'],
       });
       info(
-        `patch record: ${runDir}/patch.json${record.branch ? ` (branch ${record.branch})` : ''}`,
+        `patch record: ${runDir}/${values['dry-run'] ? 'patch.dry-run.json' : 'patch.json'}${record.branch ? ` (branch ${record.branch})` : ''}`,
       );
       if (values['dry-run']) return 0;
       // A loop that stopped with an error never reached the tests and has already said why.
