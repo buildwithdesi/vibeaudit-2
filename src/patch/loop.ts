@@ -73,6 +73,10 @@ export const PatchRecord = z.object({
       backend: z.enum(['api', 'muse-code']),
       editsApplied: z.number().int(),
       editsRejected: z.number().int(),
+      rejected: z
+        .array(z.string())
+        .default([])
+        .describe('why each rejected edit was rejected, as "file: reason"'),
       note: z.string(),
       usd: z.number(),
     }),
@@ -198,8 +202,9 @@ export async function runPatchLoop(runDir: string, options: PatchOptions): Promi
           if (outcome.usage) budget.record(finding.file, outcome.usage, rate);
           outcomes.push(outcome);
           const applied = outcome.edits.filter((e) => e.applied).length;
+          const why = [...new Set(outcome.edits.filter((e) => !e.applied).map((e) => e.reason))];
           info(
-            `${finding.file}:${finding.line ?? '?'} ${finding.ruleId}: ${applied}/${outcome.edits.length} edits applied ($${outcome.usd.toFixed(4)})`,
+            `${finding.file}:${finding.line ?? '?'} ${finding.ruleId}: ${applied}/${outcome.edits.length} edits applied${why.length ? ` (${why.join('; ')})` : ''} ($${outcome.usd.toFixed(4)})`,
           );
           if (outcome.fatal) {
             // Every later call would fail the same way. Keep what was applied, stop spending.
@@ -377,6 +382,7 @@ export async function runPatchLoop(runDir: string, options: PatchOptions): Promi
       backend: o.backend,
       editsApplied: o.edits.filter((e) => e.applied).length,
       editsRejected: o.edits.filter((e) => !e.applied).length,
+      rejected: rejectionReasons(o),
       note: o.note,
       usd: o.usd,
     })),
@@ -458,6 +464,10 @@ function dedupeByLocation(findings: readonly FindingT[]): FindingT[] {
     if (!byKey.has(key)) byKey.set(key, f);
   }
   return [...byKey.values()];
+}
+
+function rejectionReasons(outcome: PatchOutcome): string[] {
+  return outcome.edits.filter((e) => !e.applied).map((e) => `${e.edit.file}: ${e.reason}`);
 }
 
 function siblingsOf(lead: FindingT, pool: readonly FindingT[]): FindingT[] {

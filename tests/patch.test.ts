@@ -4,7 +4,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { applyEdits } from '../src/patch/edits.ts';
-import { type PatchOptions, runPatchLoop } from '../src/patch/loop.ts';
+import {
+  type PatchOptions,
+  PatchRecord,
+  type PatchRecordT,
+  runPatchLoop,
+} from '../src/patch/loop.ts';
 import { runScan } from '../src/pipeline/run.ts';
 import type { ClientConfig } from '../src/reason/meta-client.ts';
 import { setLogLevel } from '../src/util/log.ts';
@@ -445,4 +450,39 @@ test('a 402 while re-judging still-flagged findings stops the verification loop'
   assert.equal(calls.length, 1, 'one verification call, then stop');
   assert.match(record.error ?? '', /402/);
   assert.equal(record.green, false);
+});
+
+test('the record keeps why each rejected edit was rejected', async () => {
+  const runDir = await scanFresh('va2-patch-reasons-');
+  const stale = (async (_url: string | URL | Request, init?: RequestInit) => {
+    const prompt = (JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> })
+      .messages[1]?.content;
+    const file = /Location: ([^:\s]+)/.exec(prompt ?? '')?.[1] ?? '';
+    const plan = {
+      edits: [{ file, search: 'text the file does not have', replace: 'x', why: 'stale' }],
+      newDependencies: [],
+      note: 'A stale edit.',
+      confidence: 0.5,
+    };
+    return new Response(
+      JSON.stringify({
+        choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(plan) } }],
+        usage: { prompt_tokens: 10, completion_tokens: 10 },
+      }),
+      { status: 200 },
+    );
+  }) as typeof fetch;
+  const client = { ...fakePatcher([]), fetchImpl: stale };
+  const record = await runPatchLoop(runDir, loopOptions(client));
+  assert.deepEqual(record.outcomes[0]?.rejected, ['routes/users.js: search text not found']);
+  const saved = JSON.parse(readFileSync(join(runDir, 'patch.json'), 'utf8')) as PatchRecordT;
+  assert.deepEqual(saved.outcomes[0]?.rejected, ['routes/users.js: search text not found']);
+});
+
+test('an older patch record without rejection reasons still loads', () => {
+  const old = JSON.parse(readFileSync('demo/after/patch.json', 'utf8')) as {
+    outcomes: Array<Record<string, unknown>>;
+  };
+  for (const o of old.outcomes) delete o.rejected;
+  assert.deepEqual(PatchRecord.parse(old).outcomes[0]?.rejected, []);
 });

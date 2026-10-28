@@ -32,3 +32,28 @@ test('both patch prompts forbid closing a finding with a scanner suppression', (
   assert.match(system?.content ?? '', /Never add a vibe-audit-ignore comment/);
   assert.match(buildMuseCodePrompt([finding()]), /Never add a vibe-audit-ignore comment/);
 });
+
+test('a finding deep in a large file is inside the code the patcher sees', () => {
+  const lines = Array.from({ length: 2_000 }, (_, i) => `const line${i + 1} = ${i + 1}; // filler`);
+  lines[1_899] = 'exec(`ping ${req.query.host}`); // the vulnerable line';
+  const [, user] = buildPatchMessages({
+    finding: finding({ line: 1_900 }),
+    fileContent: lines.join('\n'),
+    relatedFiles: [],
+  });
+  const prompt = user?.content ?? '';
+  assert.ok(prompt.includes('// the vulnerable line'), 'the flagged line is shown');
+  assert.ok(prompt.includes('const line1899 = 1899;'), 'with the lines around it');
+  assert.ok(!prompt.includes('const line1 = 1;'), 'the top of the file is left out');
+  assert.match(prompt, /\[\d+ lines above not shown\]/);
+  assert.ok(prompt.length < 30_000, `prompt ${prompt.length} chars`);
+
+  // A small file is shown whole.
+  const [, small] = buildPatchMessages({
+    finding: finding({ line: 2 }),
+    fileContent: 'a\nb\nc',
+    relatedFiles: [],
+  });
+  assert.ok(small?.content.includes('Full file routes/users.js:'));
+  assert.ok(!small?.content.includes('not shown'));
+});

@@ -48,8 +48,7 @@ export function buildPatchMessages(input: PatchPromptInput): ChatMessage[] {
       ? `Suggested smallest fix (from an earlier automated pass):\n${repoData('fix-summary', clip(r.fixSummary, 400))}`
       : `Standard fix:\n${repoData('standard-fix', clip(f.fix, 400))}`,
     '',
-    `Full file ${f.file}:`,
-    repoData(f.file, clip(input.fileContent, 24_000)),
+    ...fileSection(f, input.fileContent),
     related ? `\nRelated files:\n${related}` : '',
     '',
     'Return the patch plan as JSON matching the schema.',
@@ -59,6 +58,46 @@ export function buildPatchMessages(input: PatchPromptInput): ChatMessage[] {
   return [
     { role: 'system', content: PATCH_SYSTEM },
     { role: 'user', content: user },
+  ];
+}
+
+const FILE_BUDGET = 24_000;
+
+/**
+ * The file as the patcher sees it: whole when it fits, otherwise a window of
+ * whole lines around the flagged line, so a finding deep in a large file is
+ * never clipped away. Edits are still matched against the whole file.
+ */
+function fileSection(f: FindingT, content: string): string[] {
+  if (content.length <= FILE_BUDGET) return [`Full file ${f.file}:`, repoData(f.file, content)];
+  const lines = content.split('\n');
+  const at = Math.min(Math.max((f.line ?? 1) - 1, 0), lines.length - 1);
+  let start = at;
+  let end = at + 1;
+  let size = (lines[at]?.length ?? 0) + 1;
+  for (let grew = true; grew; ) {
+    grew = false;
+    const above = (lines[start - 1]?.length ?? Number.POSITIVE_INFINITY) + 1;
+    if (size + above <= FILE_BUDGET) {
+      start -= 1;
+      size += above;
+      grew = true;
+    }
+    const below = (lines[end]?.length ?? Number.POSITIVE_INFINITY) + 1;
+    if (size + below <= FILE_BUDGET) {
+      end += 1;
+      size += below;
+      grew = true;
+    }
+  }
+  const shown = [
+    start > 0 ? `[${start} lines above not shown]` : '',
+    clip(lines.slice(start, end).join('\n'), FILE_BUDGET),
+    end < lines.length ? `[${lines.length - end} lines below not shown]` : '',
+  ].filter(Boolean);
+  return [
+    `File ${f.file}, lines ${start + 1}-${end} of ${lines.length} (the file is too large to show whole):`,
+    repoData(f.file, shown.join('\n')),
   ];
 }
 
