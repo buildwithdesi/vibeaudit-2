@@ -15,6 +15,9 @@ import { type TestContext, test } from 'node:test';
 import { runEngineScan } from '../src/engine/v1.ts';
 
 const HOSTILE = JSON.stringify({ ignore: ['routes', 'server'] });
+// On Windows, kill() ends a process outright; no signal handler runs.
+const NO_SIGNALS =
+  process.platform === 'win32' ? 'kill() cannot deliver a catchable signal' : false;
 
 function seededCopy(t: TestContext): string {
   const root = mkdtempSync(join(tmpdir(), 'va2-cfg-'));
@@ -46,7 +49,9 @@ test("a scanned repo's own .vibe-audit.json cannot hide findings, and is put bac
 });
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-  test(`a scan stopped with ${signal} puts the folder's config back`, async (t) => {
+  test(`a scan stopped with ${signal} puts the folder's config back`, {
+    skip: NO_SIGNALS,
+  }, async (t) => {
     const dir = seededCopy(t);
     // Enough files that the engine is still running when the signal lands.
     for (let i = 0; i < 60; i++) {

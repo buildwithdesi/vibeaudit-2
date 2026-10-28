@@ -46,7 +46,13 @@ test('the empty npm config folder is removed when the process exits', async (t) 
   assert.deepEqual(readdirSync(scratch), []);
 });
 
-test('the empty npm config folder is removed when the process is killed', async (t) => {
+// On Windows, kill() ends a process outright; no signal handler runs.
+const NO_SIGNALS =
+  process.platform === 'win32' ? 'kill() cannot deliver a catchable signal' : false;
+
+test('the empty npm config folder is removed when the process is killed', {
+  skip: NO_SIGNALS,
+}, async (t) => {
   const scratch = scratchDir(t);
   const child = runChild(
     t,
