@@ -355,3 +355,55 @@ test('the first-pass hint names the real run folder', () => {
     ),
   );
 });
+
+function section(text: string, heading: string): string {
+  const start = text.indexOf(`## ${heading}`);
+  const end = text.indexOf('\n## ', start + 1);
+  return text.slice(start, end === -1 ? undefined : end);
+}
+
+test('the report reads plainly for a founder', () => {
+  const findings = [
+    ...demoFindings(),
+    finding('i1', 'input-handling', 'routes/network.js:9'),
+    finding('h1', 'hardening-config', '.gitignore:1', null, 'warning'),
+  ];
+  const run = { ...manifest(), commit: 'abcdef1234567890abcdef1234567890abcdef12' };
+  const text = render(run, findings, reasoningRecord(DEMO_CLASSES), demoPatch());
+
+  assert.ok(text.includes('(commit abcdef1)'), 'a commit is called a commit');
+  assert.ok(
+    text.includes(
+      'The scanner raised 12 flags on 8 lines. A reasoning model looked closely at 9 of them, in the 5 kinds of problem that matter most. 6 are confirmed or likely exploitable, on 4 lines in 3 files.',
+    ),
+    text.split('\n')[6],
+  );
+  assert.ok(text.includes('| Problem | Flags | How sure we are | What it means |'));
+  // The only critical the report does not show elsewhere: network.js:9 is shown as a command.
+  const also = text.split('\n').find((l) => l.startsWith('**Also serious, not covered below:**'));
+  assert.equal(
+    also,
+    '**Also serious, not covered below:** Your server can be made to call other systems (routes/preview.js, line 8). Details are in findings.json.',
+  );
+
+  // A closed verdict gets no attack steps and no reach, and does not claim a guard closed a path.
+  const secrets = section(text, 'Passwords and keys sitting in the code');
+  assert.ok(secrets.includes('**Verdict:** Not exploitable as the code stands. Confidence: high.'));
+  assert.ok(!secrets.includes('How it happens'), secrets);
+  assert.ok(!secrets.includes('How far it reaches'));
+  assert.ok(secrets.includes('**Smallest fix (for your developer):** Fix k1.'));
+
+  const sql = section(text, 'Someone can rewrite your database commands');
+  assert.ok(sql.includes('**How it happens (for your developer):**'));
+  assert.ok(sql.includes('**How far it reaches:** many users.'));
+  assert.ok(!text.includes('Blast radius'));
+  assert.ok(!/Confidence \d+%/.test(text), 'no percentage that reads as certainty');
+
+  const after = section(text, 'After the patch');
+  assert.ok(
+    after.includes(
+      "The app's own tests: passed (run on this computer, not in a sealed container). Result: green, meaning every patched problem is gone or was judged closed, and the app's own tests pass.",
+    ),
+    after,
+  );
+});

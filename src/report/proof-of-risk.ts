@@ -21,7 +21,7 @@ const VERDICT_WORDS: Record<string, string> = {
   confirmed: 'Confirmed. The full path is visible in the code.',
   likely: 'Likely. One step is unverified, and nothing guards the path.',
   unlikely: 'Unlikely. A guard probably covers this path.',
-  'not-exploitable': 'Not exploitable. The code closes the path.',
+  'not-exploitable': 'Not exploitable as the code stands.',
   'needs-runtime-check': 'Undecided. A runtime setting decides this one.',
 };
 
@@ -50,6 +50,22 @@ const POSITION_WORDS: Record<string, string> = {
   'local-only': 'someone with access to the server itself',
   none: 'no one, based on what the code shows',
 };
+
+/** How far an attack reaches, said instead of "blast radius". */
+const REACH_WORDS: Record<string, string> = {
+  'single-user': 'one user',
+  'many-users': 'many users',
+  'whole-system': 'the whole app and everyone who uses it',
+  infrastructure: 'the servers and systems the app runs on',
+};
+
+const RUNNER_WORDS: Record<string, string> = {
+  local: 'run on this computer, not in a sealed container',
+  docker: 'run in a sealed container',
+};
+
+/** Shown per kind of problem; the rest are counted and left to findings.json. */
+const MAX_SHOWN = 5;
 
 /** True when the quote is in the file, false when it is not, null when the file was not checked. */
 export type QuoteChecker = (file: string, quote: string) => boolean | null;
@@ -110,7 +126,7 @@ export function render(
   lines.push(`# Proof of risk: ${manifest.target.label}`);
   lines.push('');
   lines.push(
-    `Scanned ${manifest.target.url ?? manifest.target.path} on ${manifest.createdAt.slice(0, 10)}${manifest.commit ? ` (version ${manifest.commit.slice(0, 7)})` : ''}.`,
+    `Scanned ${manifest.target.url ?? manifest.target.path} on ${manifest.createdAt.slice(0, 10)}${manifest.commit ? ` (commit ${manifest.commit.slice(0, 7)})` : ''}.`,
   );
   lines.push('');
   lines.push('## The short version');
@@ -123,18 +139,27 @@ export function render(
     );
     lines.push('');
   } else {
+    // Several rules often flag one line, so flags and lines are counted apart.
+    const flagged = `The scanner raised ${plural(findings.length, 'flag')} on ${plural(spots(findings), 'line')}`;
     if (reasoning && !reasoning.dryRun && reasoned.length > 0) {
+      const kinds =
+        classes.length === 1
+          ? 'the kind of problem that matters most'
+          : `the ${classes.length} kinds of problem that matter most`;
+      const where = confirmed.length
+        ? `, on ${plural(spots(confirmed), 'line')} in ${plural(new Set(confirmed.map((f) => f.file)).size, 'file')}`
+        : '';
       lines.push(
-        `The scanner flagged ${findings.length} places. A reasoning model looked closely at ${reasoned.length} of them in the ${classes.length} kinds of problem that matter most. ${confirmed.length} ${confirmed.length === 1 ? 'is' : 'are'} confirmed or likely exploitable. Each one below comes with the lines of code that prove it and the smallest fix.`,
+        `${flagged}. A reasoning model looked closely at ${reasoned.length} of them, in ${kinds}. ${confirmed.length} ${confirmed.length === 1 ? 'is' : 'are'} confirmed or likely exploitable${where}. Each one below comes with the lines of code that prove it and the smallest fix.`,
       );
     } else {
       lines.push(
-        `This is a first pass. The scanner flagged ${findings.length} places across ${Object.keys(manifest.counts.byClass).length} kinds of problem. The ${classes.length} kinds below matter most. Nothing here has been checked yet for whether an attacker can really use it. To get a risk rating and proof for each item, run: \`node src/cli.ts reason ${runDir ? runPath(runDir) : `runs/${manifest.runId}`}\`.`,
+        `This is a first pass. ${flagged}, across ${plural(Object.keys(manifest.counts.byClass).length, 'kind')} of problem. ${classes.length === 1 ? 'The kind below matters most.' : `The ${classes.length} kinds below matter most.`} Nothing here has been checked yet for whether an attacker can really use it. To get a risk rating and proof for each item, run: \`node src/cli.ts reason ${runDir ? runPath(runDir) : `runs/${manifest.runId}`}\`.`,
       );
     }
     lines.push('');
     fixFirst(lines, classes, findings);
-    lines.push('| Problem | Places | How sure we are | What it means |');
+    lines.push('| Problem | Flags | How sure we are | What it means |');
     lines.push('|---|---|---|---|');
     for (const id of classes) {
       const cls = vulnClass(id as never);
@@ -144,18 +169,18 @@ export function render(
       );
     }
     lines.push('');
+    notCovered(lines, classes, findings);
   }
 
   for (const id of classes) {
     const cls = vulnClass(id as never);
-    const inClass = findings.filter((f) => f.vulnClass === id).sort((a, b) => rank(a) - rank(b));
-    if (inClass.length === 0) continue;
+    const unique = locationsOf(findings, id);
+    if (unique.length === 0) continue;
     lines.push(`## ${PLAIN_LABELS[id] ?? cls.name}`);
     lines.push('');
     lines.push(`${cls.plain} (${cls.name})`);
     lines.push('');
-    const unique = dedupeLocations(inClass);
-    const shown = unique.slice(0, 5);
+    const shown = unique.slice(0, MAX_SHOWN);
     for (const f of shown) renderFinding(lines, f, quoteFound);
     if (unique.length > shown.length) {
       lines.push(`${unique.length - shown.length} more of this kind are listed in findings.json.`);
@@ -210,7 +235,7 @@ function afterPatch(
   const patched = [...new Set([...patch.rescan.resolved, ...patch.rescan.remaining])];
   const places = patch.selected.length;
   const result = patch.green
-    ? 'green'
+    ? "green, meaning every patched problem is gone or was judged closed, and the app's own tests pass"
     : patch.rescanClean || patch.verifiedClean
       ? 'closed, but not green because the tests did not run or did not pass'
       : 'not green';
@@ -218,7 +243,7 @@ function afterPatch(
     ? `The scan ran again on the patched code: ${fixed.size} fixed, ${patch.rescan.remaining.length} still flagged by a rule, ${patch.rescan.introduced} new.`
     : 'The scan could not run again on the patched code, so none of these fixes is confirmed yet.';
   lines.push(
-    `${who} patched ${plural(patched.length, 'finding')}${places !== patched.length ? ` in ${plural(places, 'place')}` : ''} on branch \`${patch.branch}\`. ${rescan} Project tests: ${testsWord}${patch.tests.ran ? ` (${patch.tests.runner})` : ''}. Result: ${result}.`,
+    `${who} patched ${plural(patched.length, 'finding')}${places !== patched.length ? ` in ${plural(places, 'place')}` : ''} on branch \`${patch.branch}\`. ${rescan} The app's own tests: ${testsWord}${patch.tests.ran ? ` (${RUNNER_WORDS[patch.tests.runner] ?? patch.tests.runner})` : ''}. Result: ${result}.`,
   );
   lines.push('');
   if (patch.error) {
@@ -317,16 +342,18 @@ function renderFinding(lines: string[], f: FindingT, quoteFound: QuoteChecker | 
     lines.push('');
     return;
   }
+  // A path the model judged closed keeps its proof and fix, not the steps of an attack that fails.
+  const closed = r.exploitability === 'not-exploitable' || r.exploitability === 'unlikely';
   lines.push(
-    `**Verdict:** ${VERDICT_WORDS[r.exploitability] ?? r.exploitability} Confidence ${Math.round(r.confidence * 100)}%.`,
+    `**Verdict:** ${VERDICT_WORDS[r.exploitability] ?? r.exploitability} Confidence: ${confidenceWord(r.confidence)}.`,
   );
   lines.push('');
   lines.push(`**Who can do this:** ${POSITION_WORDS[r.attackerPosition] ?? r.attackerPosition}.`);
   lines.push('');
   lines.push(`**What could happen:** ${r.plainLanguage}`);
   lines.push('');
-  if (r.attackPath.length) {
-    lines.push('**How it happens:**');
+  if (r.attackPath.length && !closed) {
+    lines.push('**How it happens (for your developer):**');
     lines.push('');
     for (const [i, step] of r.attackPath.entries()) lines.push(`${i + 1}. ${step}`);
     lines.push('');
@@ -352,9 +379,48 @@ function renderFinding(lines: string[], f: FindingT, quoteFound: QuoteChecker | 
     }
     lines.push('');
   }
-  lines.push(`**Blast radius:** ${r.blastRadius.replace(/-/g, ' ')}.`);
+  if (!closed) {
+    lines.push(
+      `**How far it reaches:** ${REACH_WORDS[r.blastRadius] ?? r.blastRadius.replace(/-/g, ' ')}.`,
+    );
+    lines.push('');
+  }
+  lines.push(`**Smallest fix (for your developer):** ${r.fixSummary}`);
   lines.push('');
-  lines.push(`**Smallest fix:** ${r.fixSummary}`);
+}
+
+/** A model's confidence in words: a percentage reads as a promise, and 100% overclaims. */
+function confidenceWord(confidence: number): string {
+  return confidence >= 0.85 ? 'high' : confidence >= 0.6 ? 'medium' : 'low';
+}
+
+/**
+ * Criticals the sections below never show: in a kind outside the top few,
+ * and on a line no shown finding covers. Named so a short report does not
+ * read as the whole story.
+ */
+function notCovered(
+  lines: string[],
+  classes: readonly string[],
+  findings: readonly FindingT[],
+): void {
+  const shown = new Set(
+    classes.flatMap((id) => locationsOf(findings, id).slice(0, MAX_SHOWN).map(locationKey)),
+  );
+  const missed = dedupeLocations(
+    findings.filter(
+      (f) =>
+        f.severity === 'critical' && !classes.includes(f.vulnClass) && !shown.has(locationKey(f)),
+    ),
+  );
+  if (missed.length === 0) return;
+  const named = missed
+    .slice(0, MAX_SHOWN)
+    .map((f) => `${label(f.vulnClass)} (${f.file}${f.line ? `, line ${f.line}` : ''})`);
+  const more = missed.length - named.length;
+  lines.push(
+    `**Also serious, not covered below:** ${named.join('; ')}${more ? `; and ${more} more` : ''}. Details are in findings.json.`,
+  );
   lines.push('');
 }
 
@@ -399,17 +465,33 @@ function fixFirst(
     .sort((a, b) => b.hot - a.hot || b.critical - a.critical || b.total - a.total)
     .slice(0, 2);
   // Two separate sentences: the labels are consequences, so "X, then Y" read as cause and effect.
-  const [first, next] = ranked.map((c) => PLAIN_LABELS[c.id] ?? vulnClass(c.id as never).name);
+  const [first, next] = ranked.map((c) => label(c.id));
   if (!first) return;
   lines.push(`**Fix first:** ${first}.${next ? ` **Next:** ${next}.` : ''}`);
   lines.push('');
+}
+
+/** A class's locations in report order: verdicts first, each line once. */
+function locationsOf(findings: readonly FindingT[], id: string): FindingT[] {
+  return dedupeLocations(
+    findings.filter((f) => f.vulnClass === id).sort((a, b) => rank(a) - rank(b)),
+  );
+}
+
+function locationKey(f: FindingT): string {
+  return `${f.file}:${f.line ?? 0}`;
+}
+
+/** Distinct lines among these findings. */
+function spots(findings: readonly FindingT[]): number {
+  return new Set(findings.map(locationKey)).size;
 }
 
 /** Several rules often flag one line. Show the location once, led by the finding with a verdict. */
 function dedupeLocations(findings: readonly FindingT[]): FindingT[] {
   const seen = new Map<string, FindingT>();
   for (const f of findings) {
-    const key = `${f.file}:${f.line ?? 0}`;
+    const key = locationKey(f);
     const existing = seen.get(key);
     if (!existing || (!existing.reasoning && f.reasoning)) seen.set(key, f);
   }
