@@ -171,3 +171,19 @@ test('muse code: a symlink planted over a tracked folder never leads a revert ou
   assert.equal(readFileSync(join(outside, 'config.js'), 'utf8'), 'victim\n');
   assert.ok(readFileSync(join(record.workDir ?? '', 'server/config.js'), 'utf8').includes('host'));
 });
+
+test('muse code: a suppression comment instead of a fix is undone, so nothing reads clean', {
+  skip: SKIP,
+}, async () => {
+  const { runDir } = await scanFresh();
+  installFakeMuse(`
+const { readFileSync, writeFileSync } = require('node:fs');
+const users = readFileSync('routes/users.js', 'utf8');
+writeFileSync('routes/users.js', users.replace('\${req.params.id}\`);', '\${req.params.id}\`); // vibe-audit-ignore'));
+`);
+  const record = await runMuse(runDir);
+  assert.deepEqual(record.rejectedFiles, ['routes/users.js']);
+  assert.equal(record.patchCommit, null, 'nothing left to commit');
+  assert.equal(record.rescanClean, false);
+  assert.equal(record.green, false);
+});

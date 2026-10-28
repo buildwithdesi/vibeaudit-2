@@ -1,5 +1,5 @@
 import { cpSync, existsSync, rmSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { lstat, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { z } from 'zod';
 import { runEngineScan } from '../engine/v1.ts';
@@ -16,7 +16,7 @@ import { writeJson, writeText } from '../util/fs.ts';
 import { info, warn } from '../util/log.ts';
 import { apiPatch, museAvailable, museCodePatch, type PatchOutcome } from './backends.ts';
 import { compareScans, parseUnifiedDiff } from './compare.ts';
-import { forbiddenPathReason } from './edits.ts';
+import { countSuppressions, forbiddenPathReason } from './edits.ts';
 import {
   changedFiles,
   checkout,
@@ -79,7 +79,9 @@ export const PatchRecord = z.object({
   ),
   rejectedFiles: z
     .array(z.string())
-    .describe('files a backend changed or created outside the allowlist; all were undone'),
+    .describe(
+      'files a backend changed or created outside the allowlist, or where it added a scanner suppression; all were undone',
+    ),
   rescan: z.object({
     ran: z.boolean(),
     before: z.object({ total: z.number().int(), byClass: z.record(z.string(), z.number().int()) }),
@@ -220,6 +222,15 @@ export async function runPatchLoop(runDir: string, options: PatchOptions): Promi
           warn(
             `reverted ${rejectedFiles.length} file(s) outside the allowlist: ${rejectedFiles.join(', ')}`,
           );
+      }
+
+      // Neither backend may close a finding by hiding it from the scanner.
+      const suppressing = await revertAddedSuppressions(workDir, baseCommit);
+      if (suppressing.length) {
+        rejectedFiles.push(...suppressing);
+        warn(
+          `reverted ${suppressing.length} file(s) that add a scanner suppression: ${suppressing.join(', ')}`,
+        );
       }
 
       patchCommit = await commitAll(
@@ -463,4 +474,29 @@ async function revertOutsideAllowlist(
     await git(repoDir, ['--literal-pathspecs', 'checkout', '-q', '--', ...restored]);
   }
   return [...planted, ...restored];
+}
+
+/**
+ * Put back every changed file whose patch adds vibe-audit-ignore comments and
+ * return those paths. The engine honours the comments, so the re-scan would
+ * read a hidden finding as fixed. Runs for both backends, on the tree itself.
+ */
+async function revertAddedSuppressions(repoDir: string, baseCommit: string): Promise<string[]> {
+  const { tracked } = await changedFiles(repoDir, baseCommit);
+  const checked = await Promise.all(
+    tracked.map(async (file) => {
+      const abs = resolve(repoDir, file);
+      const stat = await lstat(abs).catch(() => null);
+      const after = stat?.isFile() ? await readFile(abs, 'utf8') : '';
+      const before = await git(repoDir, ['cat-file', 'blob', `${baseCommit}:${file}`]).catch(
+        () => '',
+      );
+      return countSuppressions(after) > countSuppressions(before) ? file : null;
+    }),
+  );
+  const suppressing = checked.filter((file) => file !== null);
+  if (suppressing.length) {
+    await git(repoDir, ['--literal-pathspecs', 'checkout', '-q', baseCommit, '--', ...suppressing]);
+  }
+  return suppressing;
 }

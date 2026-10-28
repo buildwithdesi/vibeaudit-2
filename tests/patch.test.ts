@@ -330,3 +330,53 @@ test('a dry run never overwrites a live patch record or its stage', async () => 
   assert.equal(readFileSync(join(runDir, 'manifest.json'), 'utf8'), liveManifest);
   assert.ok(existsSync(join(runDir, 'patch.dry-run.json')), 'the plan is written beside it');
 });
+
+test('edits that add a scanner suppression together are rejected, however they are split', async () => {
+  const dir = freshCopy();
+  const network = join(dir, 'routes/network.js');
+  const original = readFileSync(network, 'utf8');
+  // Two edits, neither of which holds the whole token, assemble it in the file.
+  const split = await applyEdits(
+    dir,
+    [
+      {
+        file: 'routes/network.js',
+        search: EXEC_BEFORE,
+        replace: `${EXEC_BEFORE} // vibe-audit-`,
+        why: 'a',
+      },
+      { file: 'routes/network.js', search: 'audit-\n', replace: 'audit-ignore\n', why: 'b' },
+    ],
+    { allowedFiles: ['routes/network.js'] },
+  );
+  assert.ok(
+    split.every((r) => !r.applied),
+    JSON.stringify(split.map((r) => r.reason)),
+  );
+  assert.equal(readFileSync(network, 'utf8'), original);
+
+  // A search that already holds a suppression cannot carry a second one in.
+  const files = join(dir, 'routes/files.js');
+  writeFileSync(
+    files,
+    readFileSync(files, 'utf8').replace(
+      "import path from 'node:path';",
+      "import path from 'node:path'; // vibe-audit-ignore",
+    ),
+  );
+  const piggyback = await applyEdits(
+    dir,
+    [
+      {
+        file: 'routes/files.js',
+        search: "import path from 'node:path'; // vibe-audit-ignore",
+        replace:
+          "import path from 'node:path'; // vibe-audit-ignore\n// vibe-audit-ignore-next-line",
+        why: 'c',
+      },
+    ],
+    { allowedFiles: ['routes/files.js'] },
+  );
+  assert.equal(piggyback[0]?.applied, false);
+  assert.ok(!readFileSync(files, 'utf8').includes('-next-line'));
+});
