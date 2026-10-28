@@ -60,7 +60,7 @@ function fakePatcher(log: string[]): ClientConfig {
         fixSummary: 'already fixed',
         plainLanguage: 'The patched code closes this path.',
       };
-    } else if (prompt.includes('Location: routes/users.js:9')) {
+    } else if (prompt.includes('routes/users.js:9')) {
       plan = {
         edits: [
           {
@@ -457,7 +457,7 @@ test('the record keeps why each rejected edit was rejected', async () => {
   const stale = (async (_url: string | URL | Request, init?: RequestInit) => {
     const prompt = (JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> })
       .messages[1]?.content;
-    const file = /Location: ([^:\s]+)/.exec(prompt ?? '')?.[1] ?? '';
+    const file = /label="location">\n([^:\s]+)/.exec(prompt ?? '')?.[1] ?? '';
     const plan = {
       edits: [{ file, search: 'text the file does not have', replace: 'x', why: 'stale' }],
       newDependencies: [],
