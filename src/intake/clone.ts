@@ -130,7 +130,10 @@ export function cloneEnv(): NodeJS.ProcessEnv {
   return scrubbedEnv({ GIT_LFS_SKIP_SMUDGE: '1', GIT_CONFIG_NOSYSTEM: '1' });
 }
 
-/** An empty hooks folder next to the clone. The patch stage points its own git calls at it too. */
+/**
+ * An empty hooks folder next to the clone, for the clone's own git calls. The
+ * patch stage does not use it: src/patch/git.ts points core.hooksPath at a file.
+ */
 function noHooksDir(dest: string): string {
   return join(dirname(dest), 'no-hooks');
 }

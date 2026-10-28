@@ -44,6 +44,8 @@ const SSH_URL_RE =
 const GITHUB_PREFIX_RE =
   /^(?:(?:https?:\/\/)?(?:www\.)?github\.com\/|(?:ssh:\/\/)?git@github\.com[:/])/i;
 const SHORTHAND_RE = /^(?<owner>[^/\s]+)\/(?<repo>[^/\s]+)$/;
+// https://, git://, file://: a URL, never a folder name, whatever host or form it has.
+const SCHEME_RE = /^[a-z][a-z0-9+.-]*:\/\//i;
 
 export function parseTarget(input: string): ScanTarget {
   const raw = input.trim();
@@ -57,8 +59,15 @@ export function parseTarget(input: string): ScanTarget {
     return { kind: 'local', path: asPath, label: basename(asPath) || 'local' };
   }
 
+  const url = GITHUB_URL_RE.exec(raw) ?? SSH_URL_RE.exec(raw);
+  // Without this, git://github.com/... or https://user@github.com/... reads as a relative path.
+  if (!url && SCHEME_RE.test(raw)) {
+    throw new TargetError(
+      `"${raw}" is not a supported GitHub URL. Pass https://github.com/<owner>/<repo>, <owner>/<repo>, or a local folder.`,
+    );
+  }
   if (looksLikePath(raw)) throw new TargetError(`Folder not found: ${asPath}`);
-  const match = GITHUB_URL_RE.exec(raw) ?? SSH_URL_RE.exec(raw) ?? SHORTHAND_RE.exec(raw);
+  const match = url ?? SHORTHAND_RE.exec(raw);
   if (!match?.groups) {
     throw new TargetError(`"${raw}" is not a GitHub URL, owner/repo, or an existing folder.`);
   }

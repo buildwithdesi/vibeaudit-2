@@ -115,34 +115,39 @@ test('version prints the tool version and the engine version', async () => {
   assert.equal(result.stdout, `vibeaudit-2 ${tool} (engine ${engine})\n`);
 });
 
-test('a URL outside github.com is refused as such, not as a missing folder', async () => {
+test('a URL the target parser cannot read is refused as such, not as a missing folder', async () => {
   for (const target of [
     'https://gitlab.com/a/b',
     'ssh://git@github.example/a/b',
     'https://github.com.evil.example/a/b',
     'https://evil.example/github.com/a/b',
+    'git://github.com/OWASP/NodeGoat',
+    'https://user@github.com/OWASP/NodeGoat',
+    'https://github.com:443/OWASP/NodeGoat',
   ]) {
     const out = join(work, 'not-github');
     const result = await cli(['audit', target, '--out', out]);
     assert.equal(result.code, 2, target);
-    assert.match(result.stderr, /Only GitHub repositories can be cloned/);
-    assert.doesNotMatch(result.stderr, /Folder not found/);
+    assert.match(result.stderr, /is not a supported GitHub URL/, target);
+    assert.doesNotMatch(result.stderr, /Folder not found/, target);
     assert.equal(existsSync(out), false, 'no run folder for a refused target');
   }
 });
 
-test('a github.com URL in any scheme is left to the target parser', async () => {
+test('any target the parser refuses exits 2 before a run folder or a clone', async () => {
   // The owner "-x" is invalid, so no parser version can get as far as a clone.
-  for (const target of [
-    'ssh://git@github.com/-x/y',
-    'git://github.com/-x/y',
-    'HTTPS://GitHub.com/-x/y',
-    'https://github.com',
-  ]) {
-    const result = await cli(['scan', target, '--out', join(work, 'github-forms'), '--quiet']);
-    assert.equal(result.code, 1, `${target}: ${result.stderr}`);
-    assert.doesNotMatch(result.stderr, /not a github\.com URL/, target);
+  const cases: [string, RegExp][] = [
+    ['ssh://git@github.com/-x/y', /"-x" is not a valid GitHub owner/],
+    ['HTTPS://GitHub.com/-x/y', /"-x" is not a valid GitHub owner/],
+    ['./missing-folder', /Folder not found: .*missing-folder/],
+  ];
+  for (const [target, reason] of cases) {
+    const out = join(work, 'bad-targets');
+    const result = await cli(['scan', target, '--out', out, '--quiet']);
+    assert.equal(result.code, 2, `${target}: ${result.stderr}`);
+    assert.match(result.stderr, reason, target);
     assert.doesNotMatch(result.stderr, /cloning/, target);
+    assert.equal(existsSync(out), false, target);
   }
 });
 
@@ -285,6 +290,36 @@ test('a bad --effort fails audit before it scans', async () => {
   assert.equal(audit.code, 2);
   assert.match(audit.stderr, /--effort must be one of/);
   assert.equal(existsSync(out), false);
+});
+
+test('reason, patch and audit refuse the same bad --max-findings and --budget-usd', async () => {
+  const runDir = freshRun('limits');
+  // "2,5" and "1.5" used to be read as 2 and 1, and patch fell back to its defaults on the rest.
+  const bad = [
+    ['--budget-usd', '0,5'],
+    ['--budget-usd', '2,5'],
+    ['--max-findings', 'abc'],
+    ['--max-findings', '1.5'],
+  ];
+  for (const flags of bad) {
+    for (const command of ['reason', 'patch']) {
+      const result = await cli([command, runDir, '--dry-run', ...flags]);
+      assert.equal(result.code, 2, `${command} ${flags.join(' ')}: ${result.stderr}`);
+      assert.match(result.stderr, /--max-findings must be a positive integer/);
+    }
+  }
+  assert.equal(existsSync(join(runDir, 'reasoning.dry-run.json')), false);
+  assert.equal(existsSync(join(runDir, 'patch.dry-run.json')), false);
+
+  const out = join(work, 'audit-limits');
+  const audit = await cli(['audit', SEEDED, '--out', out, '--budget-usd', '2,5']);
+  assert.equal(audit.code, 2);
+  assert.equal(existsSync(out), false, 'audit refuses the flag before it scans');
+
+  const valid = await cli(['patch', runDir, '--dry-run', '--max-findings', '2', '--quiet']);
+  assert.equal(valid.code, 0, valid.stderr);
+  const plan = readJson(join(runDir, 'patch.dry-run.json'));
+  assert.equal((plan.selected as unknown[]).length, 2);
 });
 
 test('audit without a key still writes the report, and says reasoning was skipped', async () => {
