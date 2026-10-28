@@ -139,8 +139,20 @@ function hideTargetConfig(repoDir: string): (() => void) | null {
   if (!present(original)) return null;
   // Never overwrite a file that already sits under the parked name.
   const moved = present(parked) ? `${parked}-${randomBytes(4).toString('hex')}` : parked;
-  renameSync(original, moved);
-  return undoOnExit(() => renameSync(moved, original));
+  // Register first, then move: an interrupt that lands right after the move
+  // must already find the restore step, or the process dies without it.
+  let isParked = false;
+  const restore = undoOnExit(() => {
+    if (isParked) renameSync(moved, original);
+  });
+  try {
+    renameSync(original, moved);
+    isParked = true;
+  } catch (error) {
+    restore();
+    throw error;
+  }
+  return restore;
 }
 
 function present(path: string): boolean {
@@ -159,17 +171,18 @@ async function runEngine(
   args: string[],
   timeoutMs: number,
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  // Created and registered in one synchronous step, so no interrupt can fall in between.
-  const dir = mkdtempSync(join(tmpdir(), 'va2-engine-'));
-  const outPath = join(dir, 'stdout');
-  const errPath = join(dir, 'stderr');
+  let dir: string | null = null;
   let child: ChildProcess | null = null;
-  // Also runs if this process is interrupted mid-scan: stop the engine, drop its files.
+  // Registered before anything exists, so an interrupt at any point finds it:
+  // stop the engine and drop its files.
   const cleanup = undoOnExit(() => {
     child?.kill();
-    rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+    if (dir) rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
   });
   try {
+    dir = mkdtempSync(join(tmpdir(), 'va2-engine-'));
+    const outPath = join(dir, 'stdout');
+    const errPath = join(dir, 'stderr');
     const exitCode = await spawnToFiles(args, outPath, errPath, timeoutMs, (spawned) => {
       child = spawned;
     });

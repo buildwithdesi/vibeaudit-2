@@ -49,15 +49,17 @@ let emptyConfigDir: string | null = null;
 /** Path to an empty npm config file, one per role, so neither the repo's .npmrc nor the user's applies. */
 export function emptyNpmConfig(role: 'user' | 'global' = 'user'): string {
   if (!emptyConfigDir) {
-    const dir = mkdtempSync(join(tmpdir(), 'va2-npmrc-'));
-    emptyConfigDir = dir;
-    // One folder per process, removed however the process ends.
+    // One folder per process, removed however the process ends. The removal
+    // is registered before the folder exists, so no interrupt falls in between.
+    let dir: string | null = null;
     undoOnExit(() => {
       emptyConfigDir = null;
-      rmSync(dir, { recursive: true, force: true });
+      if (dir) rmSync(dir, { recursive: true, force: true });
     });
+    dir = mkdtempSync(join(tmpdir(), 'va2-npmrc-'));
     writeFileSync(join(dir, 'user.npmrc'), '', 'utf8');
     writeFileSync(join(dir, 'global.npmrc'), '', 'utf8');
+    emptyConfigDir = dir;
   }
   return join(emptyConfigDir, `${role}.npmrc`);
 }
