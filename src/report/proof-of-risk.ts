@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { vulnClass } from '../model/classes.ts';
+import { VULN_CLASS_IDS, vulnClass } from '../model/classes.ts';
 import { Finding, type FindingT, RunManifest, type RunManifestT } from '../model/finding.ts';
 import { PatchRecord, type PatchRecordT } from '../patch/loop.ts';
 import { ReasoningRecord, type ReasoningRecordT } from '../reason/orchestrate.ts';
@@ -89,7 +89,10 @@ export function render(
   patch: PatchRecordT | null = null,
   quoteFound: QuoteChecker | null = null,
 ): string {
-  const classes = reasoning?.classes ?? topClasses(findings);
+  // A typo in --classes is recorded as asked. Unknown ids are dropped so the run still renders.
+  const known: readonly string[] = VULN_CLASS_IDS;
+  const asked = (reasoning?.classes ?? []).filter((id) => known.includes(id));
+  const classes = asked.length ? asked : topClasses(findings);
   const reasoned = findings.filter((f) => f.reasoning);
   const confirmed = reasoned.filter(
     (f) => f.reasoning?.exploitability === 'confirmed' || f.reasoning?.exploitability === 'likely',
