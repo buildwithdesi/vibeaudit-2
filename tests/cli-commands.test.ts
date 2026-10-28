@@ -158,7 +158,10 @@ test('report writes report.md, and refuses a folder that is not a run', async ()
 test('a .env in the working folder is read, and never overrides the environment', async () => {
   const cwd = join(work, 'dotenv');
   mkdirSync(cwd, { recursive: true });
-  writeFileSync(join(cwd, '.env'), 'META_API_KEY=dummy\nMETA_REASON_MODEL=muse-spark-1.2\n');
+  writeFileSync(
+    join(cwd, '.env'),
+    'META_API_KEY=dummy\nMETA_BASE_URL=https://meta.invalid/v1\nMETA_REASON_MODEL=muse-spark-1.2\n',
+  );
 
   const fromFile = freshRun('dotenv-file');
   const loaded = await cli(['reason', fromFile, '--dry-run', '--quiet'], {}, cwd);
@@ -180,14 +183,14 @@ test('a .env in the working folder is read, and never overrides the environment'
 test('a Contributor-tier model or a plain-http endpoint is refused', async () => {
   const runDir = freshRun('refused');
   const contributor = await cli(['reason', runDir, '--dry-run'], {
-    META_API_KEY: 'dummy',
+    ...UNREACHABLE,
     META_REASON_MODEL: 'muse-spark-1.3-contributor',
   });
   assert.equal(contributor.code, 1);
   assert.match(contributor.stderr, /Contributor-tier model/);
 
   const http = await cli(['reason', runDir, '--dry-run'], {
-    META_API_KEY: 'dummy',
+    ...UNREACHABLE,
     META_BASE_URL: 'http://meta.invalid/v1',
   });
   assert.equal(http.code, 1);
