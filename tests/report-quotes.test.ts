@@ -49,6 +49,24 @@ test('quote checker never reads through a symlinked file', async (t) => {
   assert.equal(check('link.txt', 'root:x:0:0:root:/root:/bin/bash'), null);
 });
 
+test('a path written with a leading slash is read inside the repo, as before', async () => {
+  const check = await quoteChecker(fixture(), ['/routes/users.js', '\\routes\\users.js']);
+  assert.equal(check('/routes/users.js', 'const rows = await db.query(sql);'), true);
+  assert.equal(check('\\routes\\users.js', 'const rows = await db.query(sql);'), true);
+  assert.equal(check('/routes/users.js', 'const rows = made.up();'), false);
+});
+
+test('a repo folder that is itself a symlink is still checked', async (t) => {
+  const repo = fixture();
+  const linked = join(repo, '..', 'linked-repo');
+  // A junction needs no extra rights on Windows; elsewhere the type is ignored.
+  if (!link(repo, linked, 'junction')) return t.skip(NO_LINKS);
+  const check = await quoteChecker(linked, ['routes/users.js', '../host.txt']);
+  assert.equal(check('routes/users.js', 'const rows = await db.query(sql);'), true);
+  assert.equal(check('routes/users.js', 'const rows = made.up();'), false);
+  assert.equal(check('../host.txt', 'root:x:0:0:root:/root:/bin/bash'), false);
+});
+
 const CONFIG_JS = [
   'export const database = {',
   "  password: 'Winter2026Prod!',",

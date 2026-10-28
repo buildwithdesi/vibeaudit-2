@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { lstat, readFile } from 'node:fs/promises';
+import { lstat, readFile, stat } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { z } from 'zod';
 import { VULN_CLASS_IDS, VULN_CLASSES, vulnClass } from '../model/classes.ts';
@@ -505,27 +505,33 @@ function dedupeLocations(findings: readonly FindingT[]): FindingT[] {
  * files are read through the same guard as the code context: a path outside
  * the repo cannot hold the quote, and a symlink, an oversized file or a
  * secret-bearing file is never read, so its quotes are not checked. Neither
- * is anything when the repo is not on this machine.
+ * is anything when the repo is not on this machine. The repo folder itself may
+ * be a symlink: containment is checked per file, against its real path.
  */
 export async function quoteChecker(
   repoDir: string,
   files: Iterable<string>,
 ): Promise<QuoteChecker> {
   const root = resolve(repoDir);
-  const present = await lstat(root).then(
+  const present = await stat(root).then(
     (info) => info.isDirectory(),
     () => false,
   );
   if (!present) return () => null;
-  const keys = [...new Set([...files].map((f) => f.replace(/\\/g, '/')))];
+  const keys = [...new Set([...files].map(repoKey))];
   const texts = await Promise.all(keys.map((key) => readForQuotes(root, key)));
   const cache = new Map(keys.map((key, i) => [key, texts[i] ?? null]));
   return (file, quote) => {
-    const versions = cache.get(file.replace(/\\/g, '/'));
+    const versions = cache.get(repoKey(file));
     if (!versions) return null;
     const needle = squash(quote);
     return needle.length > 0 && versions.some((v) => v.includes(needle));
   };
+}
+
+/** A quoted path as a repo key: forward slashes, and a leading slash means the repo root. */
+function repoKey(file: string): string {
+  return file.replace(/\\/g, '/').replace(/^\/+/, '');
 }
 
 /** The file as written and as masked; [] when it cannot hold the quote; null when it is not checked. */
