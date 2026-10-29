@@ -20,6 +20,8 @@ exploitability    one Muse Spark call per kept finding, grouped by file, inside 
 findings.json (updated in place, triage and reasoning slots filled)
 ```
 
+Status: the triage step is built, not run live. It runs only when `TRIAGE_*` is set, and no recorded run had it set, so the recorded runs went from the repo map straight to Muse Spark (`triage: null` in `demo/after/reasoning.json`).
+
 ## Why open weights go first
 
 Most findings in a real repository are noise for a frontier model: test fixtures, vendored code, a guard three lines up. Glimmer 30B costs about a quarter of Spark per input token and runs on any OpenAI-compatible host. It answers one narrow question and must quote the line that proves a drop. Keeping is free, dropping needs proof, so the triage pass can only remove findings a human would also remove.

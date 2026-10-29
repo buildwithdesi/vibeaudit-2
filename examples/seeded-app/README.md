@@ -2,7 +2,7 @@
 
 An intentionally vulnerable Express app. It is the "before" state for Vibe Audit 2.0 demos and tests. Never deploy it.
 
-Five vulnerability classes are planted, one per file:
+Six vulnerability classes are planted across five files:
 
 | Class | File | What is wrong |
 |---|---|---|

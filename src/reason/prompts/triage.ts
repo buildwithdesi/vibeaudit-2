@@ -33,10 +33,12 @@ export function buildTriageMessages(input: TriageInput): ChatMessage[] {
     input.repoSummary
       ? `Repository summary:\n${repoData('repo-summary', clip(input.repoSummary, 600))}`
       : '',
-    `File: ${inline(f.file)}${f.line ? `:${f.line}` : ''}`,
-    input.fileRole ? `File role from the repo map: ${inline(input.fileRole, 40)}` : '',
+    `File:\n${repoData('location', `${inline(f.file)}${f.line ? `:${f.line}` : ''}`)}`,
+    input.fileRole
+      ? `File role from the repo map:\n${repoData('file-role', inline(input.fileRole, 40))}`
+      : '',
     `Rule: ${f.ruleId} (${f.ruleName}), severity ${f.severity}, class ${f.vulnClass}`,
-    `What the rule says: ${inline(f.message, 400)}`,
+    `What the rule says:\n${repoData('rule-message', inline(f.message, 400))}`,
     f.evidence ? `Flagged evidence:\n${repoData('evidence', clip(f.evidence, 400))}` : '',
     f.context
       ? `Code around the flagged line:\n${repoData(f.file, clip(f.context.code, 3_000))}`

@@ -1,15 +1,18 @@
 #!/usr/bin/env node
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { engineVersion, listEngineRules } from './engine/v1.ts';
-import { runPatchLoop } from './patch/loop.ts';
+import { parseTarget, TargetError } from './intake/target.ts';
+import { VULN_CLASS_IDS } from './model/classes.ts';
+import { museAvailable } from './patch/backends.ts';
+import { greenBlockers, isClosed, runPatchLoop } from './patch/loop.ts';
 import { runScan } from './pipeline/run.ts';
-import { clientFromEnv, type ReasoningEffort } from './reason/meta-client.ts';
-import { DEFAULT_EFFORT, runReasoning } from './reason/orchestrate.ts';
+import { type ClientConfig, clientFromEnv, type ReasoningEffort } from './reason/meta-client.ts';
+import { DEFAULT_EFFORT, type ReasonOptions, runReasoning } from './reason/orchestrate.ts';
 import { renderProofOfRisk } from './report/proof-of-risk.ts';
 import { topClasses } from './report/summary.ts';
-import { info, setLogLevel } from './util/log.ts';
+import { info, setLogLevel, warn } from './util/log.ts';
 
 const USAGE = `vibeaudit2 <command> [options]
 
@@ -41,8 +44,9 @@ Reason options
 
 Patch options
   --backend <auto|api|muse-code>   auto uses the Model API; muse-code runs the Muse Code agent and must be asked for
+  --dry-run              Plan only: write the findings that would be patched to patch.dry-run.json, edit nothing, make no API call
   --run-tests            Run the project's own test script after patching
-  --docker / --no-docker Run those tests in a throwaway node:24 container (default: on when Docker is available)
+  --docker / --no-docker Run those tests in a throwaway node:24-alpine container (default: on when Docker is available)
   --allow-local-tests    Allow the tests to run on this machine when Docker is not available
   --muse-model <id>      Model for Muse Code (default: muse-spark-1.3)
 
@@ -72,7 +76,8 @@ async function main(argv: string[]): Promise<number> {
       force: { type: 'boolean', default: false },
       effort: { type: 'string', default: DEFAULT_EFFORT.exploit },
       'budget-usd': { type: 'string', default: '5' },
-      'no-triage': { type: 'boolean', default: false },
+      // allowNegative turns --no-triage into triage: false.
+      triage: { type: 'boolean', default: true },
       backend: { type: 'string', default: 'auto' },
       'run-tests': { type: 'boolean', default: false },
       docker: { type: 'boolean', default: true },
@@ -90,12 +95,12 @@ async function main(argv: string[]): Promise<number> {
   const [command, target] = positionals;
   if (values.help || !command) {
     process.stdout.write(USAGE);
-    return command ? 0 : 2;
+    return values.help ? 0 : 2;
   }
 
   switch (command) {
     case 'version': {
-      process.stdout.write(`vibeaudit-2 engine ${await engineVersion()}\n`);
+      process.stdout.write(`vibeaudit-2 ${toolVersion()} (engine ${await engineVersion()})\n`);
       return 0;
     }
     case 'rules': {
@@ -111,11 +116,22 @@ async function main(argv: string[]): Promise<number> {
     case 'scan':
     case 'audit': {
       if (!target) return usageError(`${command} needs a target.`);
+      // runScan parses it again; parsing here makes a bad target a usage error, before any run folder.
+      try {
+        parseTarget(target);
+      } catch (error) {
+        if (!(error instanceof TargetError)) throw error;
+        process.stderr.write(`${error.message}\n`);
+        return 2;
+      }
       const contextLines = Number.parseInt(values.context, 10);
       if (!Number.isFinite(contextLines) || contextLines < 0 || contextLines > 50) {
         process.stderr.write('--context must be a number between 0 and 50.\n');
         return 2;
       }
+      // Check the reasoning flags now: a typo should not cost a scan.
+      const audit = command === 'audit' ? reasonOptions(values) : null;
+      if (typeof audit === 'number') return audit;
       const result = await runScan(target, {
         outDir: values.out,
         ref: values.ref ?? null,
@@ -131,16 +147,26 @@ async function main(argv: string[]): Promise<number> {
       info(`top classes: ${topClasses(result.findings).join(', ') || 'none'}`);
       info(`summary: ${result.runDir}/summary.md`);
       if (values.json) process.stdout.write(`${JSON.stringify(result.findings, null, 2)}\n`);
-      if (command === 'scan') return 0;
-      const code = await reason(result.runDir, values);
-      if (code !== 0) return code;
+      if (!audit) return 0;
+      if (audit.dryRun || audit.reason) {
+        const code = await reason(result.runDir, audit);
+        if (code !== 0) return code;
+      } else {
+        // The scan is done and the report needs no model, so write it rather than fail.
+        warn(
+          'No META_API_KEY: skipped reasoning, so the report has no exploitability verdicts. Set META_API_KEY in .env for verdicts, or pass --dry-run to save the prompts.',
+        );
+      }
       await renderProofOfRisk(result.runDir);
       info(`report: ${result.runDir}/report.md`);
       return 0;
     }
     case 'reason': {
       if (!target) return usageError('reason needs a run folder.');
-      return reason(resolveRunDir(target), values);
+      const runDir = resolveRunDir(target);
+      const options = reasonOptions(values);
+      if (typeof options === 'number') return options;
+      return reason(runDir, options);
     }
     case 'report': {
       if (!target) return usageError('report needs a run folder.');
@@ -156,34 +182,37 @@ async function main(argv: string[]): Promise<number> {
       if (backend !== 'auto' && backend !== 'api' && backend !== 'muse-code') {
         return usageError('--backend must be auto, api, or muse-code.');
       }
-      const maxFindings = Number.parseInt(values['max-findings'] ?? '10', 10);
-      const budgetUsd = Number.parseFloat(values['budget-usd']);
+      const classes = parseClasses(values.classes);
+      if (typeof classes === 'number') return classes;
+      const limits = parseLimits(values, 10);
+      if (typeof limits === 'number') return limits;
+      const client = clientFromEnv('META');
+      const missing = missingPatchBackend(backend, client);
+      if (missing && !values['dry-run']) throw new Error(missing);
+      if (missing) warn(missing);
       const record = await runPatchLoop(runDir, {
         backend,
-        client: clientFromEnv('META'),
+        client,
         museModel: values['muse-model'],
-        classes: values.classes
-          ? values.classes
-              .split(',')
-              .map((c) => c.trim())
-              .filter(Boolean)
-          : null,
-        maxFindings: Number.isFinite(maxFindings) && maxFindings > 0 ? maxFindings : 10,
+        classes,
+        maxFindings: limits.maxFindings,
         runTests: values['run-tests'],
         useDocker: values.docker,
         allowLocalTests: values['allow-local-tests'],
-        budgetUsd: Number.isFinite(budgetUsd) && budgetUsd > 0 ? budgetUsd : 5,
+        budgetUsd: limits.budgetUsd,
         dryRun: values['dry-run'],
       });
       info(
-        `patch record: ${runDir}/patch.json${record.branch ? ` (branch ${record.branch})` : ''}`,
+        `patch record: ${runDir}/${values['dry-run'] ? 'patch.dry-run.json' : 'patch.json'}${record.branch ? ` (branch ${record.branch})` : ''}`,
       );
       if (values['dry-run']) return 0;
+      // A loop that stopped with an error never reached the tests and has already said why.
+      if (values['run-tests'] && record.patchCommit && !record.tests.ran && !record.error) {
+        warn(`project tests not run: ${record.tests.outputTail}`);
+      }
       if (record.green) return 0;
-      if (record.rescanClean) {
-        info(
-          're-scan is clean but the project tests did not run or did not pass, so this is not green',
-        );
+      if (isClosed(record)) {
+        info(`closed, but not green because ${greenBlockers(record).join(' and ')}`);
       }
       return 1;
     }
@@ -193,26 +222,55 @@ async function main(argv: string[]): Promise<number> {
   }
 }
 
-async function reason(
-  runDir: string,
-  values: {
-    'dry-run': boolean;
-    classes?: string | undefined;
-    'max-findings'?: string | undefined;
-    effort: string;
-    'budget-usd': string;
-    'no-triage': boolean;
-    force: boolean;
-  },
-): Promise<number> {
+async function reason(runDir: string, options: ReasonOptions): Promise<number> {
+  const record = await runReasoning(runDir, options);
+  return record.aborted ? 1 : 0;
+}
+
+/** The reasoning flags as options, or exit code 2 after saying which flag is wrong. */
+function reasonOptions(values: {
+  'dry-run': boolean;
+  classes?: string | undefined;
+  'max-findings'?: string | undefined;
+  effort: string;
+  'budget-usd': string;
+  triage: boolean;
+  force: boolean;
+}): ReasonOptions | number {
   if (!EFFORTS.has(values.effort as ReasoningEffort)) {
     process.stderr.write(`--effort must be one of ${[...EFFORTS].join(', ')}.\n`);
     return 2;
   }
-  const maxFindings = Number.parseInt(values['max-findings'] ?? '40', 10);
-  const budgetUsd = Number.parseFloat(values['budget-usd']);
+  const limits = parseLimits(values, 40);
+  if (typeof limits === 'number') return limits;
+  const classes = parseClasses(values.classes);
+  if (typeof classes === 'number') return classes;
+  return {
+    reason: clientFromEnv('META'),
+    triage: values.triage ? clientFromEnv('TRIAGE') : null,
+    dryRun: values['dry-run'],
+    classes,
+    maxFindings: limits.maxFindings,
+    effort: { ...DEFAULT_EFFORT, exploit: values.effort as ReasoningEffort },
+    budget: { perRunUsd: limits.budgetUsd },
+    force: values.force,
+  };
+}
+
+/**
+ * --max-findings and --budget-usd as numbers, or exit code 2. reason, audit
+ * and patch share this, so no command quietly runs on a cap nobody typed.
+ * Number() reads the whole string: parseFloat would take "2,5" as 2.
+ */
+function parseLimits(
+  values: { 'max-findings'?: string | undefined; 'budget-usd': string },
+  defaultMaxFindings: number,
+): { maxFindings: number; budgetUsd: number } | number {
+  const raw = values['max-findings'];
+  const maxFindings = raw === undefined ? defaultMaxFindings : Number(raw);
+  const budgetUsd = Number(values['budget-usd']);
   if (
-    !Number.isFinite(maxFindings) ||
+    !Number.isInteger(maxFindings) ||
     maxFindings < 1 ||
     !Number.isFinite(budgetUsd) ||
     budgetUsd <= 0
@@ -222,22 +280,48 @@ async function reason(
     );
     return 2;
   }
-  const record = await runReasoning(runDir, {
-    reason: clientFromEnv('META'),
-    triage: values['no-triage'] ? null : clientFromEnv('TRIAGE'),
-    dryRun: values['dry-run'],
-    classes: values.classes
-      ? values.classes
-          .split(',')
-          .map((c) => c.trim())
-          .filter(Boolean)
-      : null,
-    maxFindings,
-    effort: { ...DEFAULT_EFFORT, exploit: values.effort as ReasoningEffort },
-    budget: { perRunUsd: budgetUsd },
-    force: values.force,
-  });
-  return record.aborted ? 1 : 0;
+  return { maxFindings, budgetUsd };
+}
+
+/**
+ * --classes as known class ids, or null for the default. An unknown id would
+ * select nothing, still pay for the repository map, and leave a reasoning
+ * record the report cannot render, so it is exit code 2 instead.
+ */
+function parseClasses(raw: string | undefined): string[] | null | number {
+  if (!raw) return null;
+  const ids = raw
+    .split(',')
+    .map((c) => c.trim())
+    .filter(Boolean);
+  const known: readonly string[] = VULN_CLASS_IDS;
+  const unknown = ids.filter((id) => !known.includes(id));
+  if (ids.length > 0 && unknown.length === 0) return ids;
+  const problem = unknown.length
+    ? `Unknown --classes value: ${unknown.join(', ')}.`
+    : '--classes needs at least one class.';
+  process.stderr.write(`${problem} Valid classes: ${VULN_CLASS_IDS.join(', ')}.\n`);
+  return 2;
+}
+
+/**
+ * Why the patch loop would run with no backend, or null when it has one. The
+ * loop itself (resolveBackend) falls back to "none" silently and can then
+ * only report every finding as still flagged. These rules copy resolveBackend
+ * in src/patch/loop.ts: change both together.
+ */
+function missingPatchBackend(
+  backend: 'auto' | 'api' | 'muse-code',
+  client: ClientConfig | null,
+): string | null {
+  if (backend === 'muse-code') {
+    return museAvailable()
+      ? null
+      : 'muse CLI not found on PATH. Install Muse Code, or use --backend api with META_API_KEY in .env.';
+  }
+  return client
+    ? null
+    : 'No patch backend. Set META_API_KEY in .env, or pass --backend muse-code with Muse Code installed.';
 }
 
 function resolveRunDir(input: string): string {
@@ -246,6 +330,12 @@ function resolveRunDir(input: string): string {
     throw new Error(`${dir} is not a run folder (no manifest.json). Run "scan" first.`);
   }
   return dir;
+}
+
+/** package.json sits one folder above both src/cli.ts and dist/cli.js. */
+function toolVersion(): string {
+  const raw = readFileSync(new URL('../package.json', import.meta.url), 'utf8');
+  return (JSON.parse(raw) as { version?: string }).version ?? 'unknown';
 }
 
 function usageError(message: string): number {

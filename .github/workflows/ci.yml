@@ -5,14 +5,26 @@ on:
     branches: [main]
   pull_request:
 
+# The workflow only reads the repository. No step needs write access or a secret.
+permissions:
+  contents: read
+
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # package.json engines allows Node 22.18 and newer; the README recommends 24.
+        node: [22, 24]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
         with:
-          node-version: 24
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
           cache: npm
       # Install scripts stay off: a dependency never runs code on this runner.
       - run: npm ci --ignore-scripts
@@ -20,5 +32,15 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run build
+      # The package bin is dist/cli.js. Run it as an installed vibeaudit2 would run, with no API key.
+      - name: Smoke-test the built CLI
+        run: |
+          node dist/cli.js version
+          node dist/cli.js scan examples/seeded-app --out "$RUNNER_TEMP/runs" --quiet
+          run="$(ls -d "$RUNNER_TEMP"/runs/*/ | head -n 1)"
+          node dist/cli.js reason "$run" --dry-run
+          node dist/cli.js report "$run"
+          node dist/cli.js patch "$run" --dry-run
+          test -s "$run/report.md"
       # The product eats its own dog food: the v1 engine scans this repo.
       - run: npm run audit:self

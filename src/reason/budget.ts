@@ -3,8 +3,9 @@ import { z } from 'zod';
 
 /**
  * Reasoning costs money per token, so the pipeline spends it on purpose.
- * Three caps, all configurable: input tokens per file, output tokens per
- * finding, and dollars per run. When a file hits its cap the remaining
+ * Three caps, all configurable: input tokens per file, findings per file,
+ * and dollars per run. Output tokens per finding is what the dollar cap
+ * expects one verdict to cost. When a file hits its cap the remaining
  * findings in that file are marked "budget-exhausted" and still ship in the
  * report with their deterministic v1 result. Nothing is silently dropped.
  */
@@ -63,6 +64,7 @@ export function estimateTokens(text: string): number {
 
 export interface BudgetConfig {
   perFileInputTokens: number;
+  /** Completion tokens one verdict is expected to bill, reasoning included. */
   perFindingOutputTokens: number;
   perRunUsd: number;
   maxFindingsPerFile: number;
@@ -70,7 +72,10 @@ export interface BudgetConfig {
 
 export const DEFAULT_BUDGET: BudgetConfig = {
   perFileInputTokens: 24_000,
-  perFindingOutputTokens: 2_000,
+  // A high-effort Muse Spark verdict billed about 3,700 completion tokens on
+  // the live seeded-app run (demo/after/reasoning.json); the answer itself is
+  // a few hundred, the rest is reasoning.
+  perFindingOutputTokens: 4_000,
   perRunUsd: 5,
   maxFindingsPerFile: 8,
 };
