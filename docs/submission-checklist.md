@@ -11,7 +11,7 @@ Deadline: Wednesday November 4, 2026, 9:00 PM ET (EST by then; 02:00 UTC on Nove
 - [x] Live reasoning run on the demo repo completed; `report.md` reads well to a non-security reader. Done October 27: `demo/after/reasoning.json`, `demo/after/report.md`.
 - [x] Patch loop green on the demo repo. Done October 27: `demo/after/patch.json`. The October 31 scope cut is not needed.
 - [x] Before and after artifacts copied into `demo/` and committed (summary, report, patch diff, manifests).
-- [ ] Open the demo repo in a private window and confirm branch `vibeaudit2/patch-20261027T231844Z-buildwithdesi-vibeaudit-2-demo-app-4012` exists with head `766db6a` (the branch CONTRIBUTIONS names). Then check `vibeaudit2/patch-20261028T011454Z-buildwithdesi-vibeaudit-2-demo-app-a578`, the branch the video run prints: push it, or keep its name off screen.
+- [x] Demo repo branches. Both patch branches are on https://github.com/buildwithdesi/vibeaudit-2-demo-app: `...-4012` at `766db6a` (the branch CONTRIBUTIONS names) and `...-a578` at `18ae293` (the branch the video prints), pushed October 29. Still worth one look in a private window before submitting.
 - [ ] Optional: copy the a578 run's `manifest.json`, `reasoning.json` and `patch.json` into `demo/video` (Windows paths scrubbed), so the video's numbers trace to records the way `demo/after` does.
 - [ ] CONTRIBUTIONS.md status table matches reality. Every row says built, cut, or not started.
 - [ ] `npm run verify` and `npm run audit:self` pass on a fresh clone (`git clone`, `npm ci --ignore-scripts`).
