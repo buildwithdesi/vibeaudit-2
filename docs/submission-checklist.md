@@ -6,16 +6,16 @@ Deadline: Wednesday November 4, 2026, 9:00 PM ET (EST by then; 02:00 UTC on Nove
 
 - [ ] Claim the $150 Model API credit through the claim form (closes at the same moment as submissions). Needs name, application email, Model API Team ID.
 - [ ] Add a payment method on the Model API account; the credit does not apply without one.
-- [ ] `META_API_KEY` in `.env`, never committed. On the tip, `git ls-files | grep -E '(^|/)\.env'` must print only `.env.example`, and `git grep -lE 'LLM_[0-9]{6,}_' -- . ':!tests'` must print nothing (the fake key in `tests/context.test.ts` is left out on purpose). Both held on October 28. They print file names, never a key.
+- [x] `META_API_KEY` in `.env`, never committed. On the tip, `git ls-files | grep -E '(^|/)\.env'` must print only `.env.example`, and `git grep -lE 'LLM_[0-9]{6,}_' -- . ':!tests'` must print nothing (the fake key in `tests/context.test.ts` is left out on purpose). Both held on October 28 and again on October 29. They print file names, never a key.
 - [ ] Revoke the Meta key that landed in `.env.example` on October 27 at dev.meta.ai (revoke it, do not only add a new one), and check the dashboard no longer lists it as active. Then write "revoked on <date>" here and in the build log. Rewriting history to drop it is optional and changes every later commit SHA.
 - [x] Live reasoning run on the demo repo completed; `report.md` reads well to a non-security reader. Done October 27: `demo/after/reasoning.json`, `demo/after/report.md`.
 - [x] Patch loop green on the demo repo. Done October 27: `demo/after/patch.json`. The October 31 scope cut is not needed.
 - [x] Before and after artifacts copied into `demo/` and committed (summary, report, patch diff, manifests).
-- [ ] Open the demo repo in a private window and confirm branch `vibeaudit2/patch-20261027T231844Z-buildwithdesi-vibeaudit-2-demo-app-4012` exists with head `766db6a` (the branch CONTRIBUTIONS names). Then check `vibeaudit2/patch-20261028T011454Z-buildwithdesi-vibeaudit-2-demo-app-a578`, the branch the video run prints: push it, or keep its name off screen.
+- [x] Open the demo repo in a private window and confirm branch `vibeaudit2/patch-20261027T231844Z-buildwithdesi-vibeaudit-2-demo-app-4012` exists with head `766db6a` (the branch CONTRIBUTIONS names). Then check `vibeaudit2/patch-20261028T011454Z-buildwithdesi-vibeaudit-2-demo-app-a578`, the branch the video run prints: push it, or keep its name off screen. Checked October 29 through the GitHub API: main `90357d5`, 4012 at `766db6a`, a578 at `18ae293`. The a578 branch is pushed, so the video run can show its name.
 - [ ] Optional: copy the a578 run's `manifest.json`, `reasoning.json` and `patch.json` into `demo/video` (Windows paths scrubbed), so the video's numbers trace to records the way `demo/after` does.
-- [ ] CONTRIBUTIONS.md status table matches reality. Every row says built, cut, or not started.
-- [ ] `npm run verify` and `npm run audit:self` pass on a fresh clone (`git clone`, `npm ci --ignore-scripts`).
-- [ ] CI green on the last commit.
+- [x] CONTRIBUTIONS.md status table matches reality. Every row says built, cut, or not started. Checked October 29: rows 2 and 4 say built, with what ran live and what did not.
+- [x] `npm run verify` and `npm run audit:self` pass on a fresh clone (`git clone`, `npm ci --ignore-scripts`). Held October 29 on a fresh clone of `976c90a`: 174 tests, 164 pass, 0 fail, 10 skipped; build clean; self-audit clean, 33 files, 104 rules.
+- [x] CI green on the last commit. Green on `976c90a` (merge of PR 2), both Node 22 and Node 24.
 - [ ] README quick start works on a machine that is not this one (fresh clone on the laptop, or a Docker `node:24` container).
 - [ ] Demo video recorded, under 3 minutes, captions on, uploaded (unlisted YouTube or Vimeo), link opens in a private window.
 - [ ] Video shows only work from the window. v1 named as prior work once. Watch the cut against "Check the cut before Nov 2" in `docs/demo-script.md`: the cut lives outside the repo, so nobody else can check it.
