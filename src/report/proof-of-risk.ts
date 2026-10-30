@@ -118,7 +118,7 @@ export function render(
   // A typo in --classes is recorded as asked. Unknown ids are dropped so the run still renders.
   const known: readonly string[] = VULN_CLASS_IDS;
   const asked = (reasoning?.classes ?? []).filter((id) => known.includes(id));
-  const classes = asked.length ? asked : topClasses(findings);
+  const classes = readingOrder(asked.length ? asked : topClasses(findings), findings);
   const reasoned = findings.filter((f) => f.reasoning);
   const confirmed = reasoned.filter(isHot);
   const lines: string[] = [];
@@ -172,16 +172,27 @@ export function render(
     notCovered(lines, classes, findings);
   }
 
+  let ruledOut = false;
   for (const id of classes) {
     const cls = vulnClass(id as never);
     const unique = locationsOf(findings, id);
     if (unique.length === 0) continue;
-    lines.push(`## ${PLAIN_LABELS[id] ?? cls.name}`);
+    // Cleared kinds come last, under one heading, so a reader who stops early has seen every real risk.
+    if (!ruledOut && isCleared(findings, id)) {
+      ruledOut = true;
+      lines.push('## Checked and ruled out');
+      lines.push('');
+      lines.push(
+        'The scanner flagged these too. A reasoning model read the code around each one and found no way in. They are kept here so you can see the reasoning, not because they need fixing today.',
+      );
+      lines.push('');
+    }
+    lines.push(`${ruledOut ? '###' : '##'} ${PLAIN_LABELS[id] ?? cls.name}`);
     lines.push('');
     lines.push(`${cls.plain} (${cls.name})`);
     lines.push('');
     const shown = unique.slice(0, MAX_SHOWN);
-    for (const f of shown) renderFinding(lines, f, quoteFound);
+    for (const f of shown) renderFinding(lines, f, quoteFound, ruledOut);
     if (unique.length > shown.length) {
       lines.push(`${unique.length - shown.length} more of this kind are listed in findings.json.`);
       lines.push('');
@@ -322,8 +333,13 @@ function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? '' : 's'}`;
 }
 
-function renderFinding(lines: string[], f: FindingT, quoteFound: QuoteChecker | null): void {
-  lines.push(`### ${f.file}${f.line ? `, line ${f.line}` : ''}`);
+function renderFinding(
+  lines: string[],
+  f: FindingT,
+  quoteFound: QuoteChecker | null,
+  nested = false,
+): void {
+  lines.push(`${nested ? '####' : '###'} ${f.file}${f.line ? `, line ${f.line}` : ''}`);
   lines.push('');
   const r = f.reasoning;
   if (!r) {
@@ -373,10 +389,7 @@ function renderFinding(lines: string[], f: FindingT, quoteFound: QuoteChecker | 
     lines.push('');
     for (const e of r.evidence.slice(0, 4)) {
       const verified = quoteFound ? quoteFound(e.file, e.quote) : null;
-      const flag =
-        verified === false
-          ? ' (this quote was not found in the file; treat it as a paraphrase)'
-          : '';
+      const flag = verified === false ? ' (not matched word for word against the file)' : '';
       lines.push(`- \`${e.file}${e.line ? `:${e.line}` : ''}\`${flag}`);
       lines.push('');
       lines.push('  ```');
@@ -455,6 +468,37 @@ function howSure(inClass: readonly FindingT[]): string {
   return parts.join('; ');
 }
 
+/** Every flag of this kind was judged closed or set aside before reasoning. */
+function isCleared(findings: readonly FindingT[], id: string): boolean {
+  const inClass = findings.filter((f) => f.vulnClass === id);
+  return (
+    inClass.length > 0 &&
+    inClass.every(
+      (f) =>
+        f.reasoning?.exploitability === 'not-exploitable' ||
+        f.reasoning?.exploitability === 'unlikely' ||
+        isSetAside(f),
+    )
+  );
+}
+
+/**
+ * The order a founder should read the kinds in: most confirmed or likely
+ * first, then by the engine's own ranking, with kinds that were checked and
+ * cleared at the end. Ties keep the engine's order, so an unreasoned run
+ * reads exactly as before.
+ */
+function readingOrder(classes: readonly string[], findings: readonly FindingT[]): string[] {
+  const hot = (id: string) => findings.filter((f) => f.vulnClass === id && isHot(f)).length;
+  return [...classes].sort((a, b) => {
+    const clearedA = isCleared(findings, a) ? 1 : 0;
+    const clearedB = isCleared(findings, b) ? 1 : 0;
+    if (clearedA !== clearedB) return clearedA - clearedB;
+    if (hot(b) !== hot(a)) return hot(b) - hot(a);
+    return classes.indexOf(a) - classes.indexOf(b);
+  });
+}
+
 /**
  * The two kinds to fix first: most confirmed or likely, then most criticals,
  * then most findings. A kind whose every finding was judged closed or set
@@ -473,12 +517,7 @@ function fixFirst(
         hot: inClass.filter(isHot).length,
         critical: inClass.filter((f) => f.severity === 'critical').length,
         total: inClass.length,
-        cleared: inClass.every(
-          (f) =>
-            f.reasoning?.exploitability === 'not-exploitable' ||
-            f.reasoning?.exploitability === 'unlikely' ||
-            isSetAside(f),
-        ),
+        cleared: isCleared(findings, id),
       };
     })
     .filter((c) => c.total > 0 && !c.cleared)

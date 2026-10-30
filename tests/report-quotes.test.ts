@@ -177,7 +177,7 @@ function movedRun(quote: string, withRepo: boolean): string {
   return runDir;
 }
 
-const FLAG = 'treat it as a paraphrase';
+const FLAG = 'not matched word for word';
 
 test('the report checks quotes in a moved run folder, and never calls a masked quote made up', async () => {
   const real = "password: '[REDACTED:15]',";

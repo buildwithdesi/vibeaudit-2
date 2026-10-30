@@ -38,3 +38,10 @@ One entry per working day inside the hackathon window. Commit times are in `git 
 - Redacted the Windows account name from the recorded paths in `demo/`, and a vault path and a signed link from the research notes. Older commits still hold them.
 - Line 1 of `demo/video/transcript-patch.txt` shows the patch command without `--allow-local-tests`, but the recorded output, "project tests: passed (local)", cannot happen without that flag. The line is left as committed for Desi to confirm what was typed (`docs/demo-script.md`, scene 5).
 - Drafted the submission description and an AI-assistance line in the checklist, for review.
+
+## 2026-10-29 (Thursday), day 4
+
+- Report reads in risk order. Kinds with confirmed or likely findings come first, kinds the model checked and cleared sit last under one "Checked and ruled out" heading, and the summary table follows the same order. Before this, the demo report opened on three fake credentials judged not exploitable and said to fix them first. The engine's own order is kept for an unreasoned run.
+- A quote the checker cannot match in the file is flagged "not matched word for word against the file" instead of "treat it as a paraphrase".
+- `demo/after/report.md` and `demo/video/report.md` regenerated from the local run folders with the current renderer. Every count is unchanged.
+- README opens with the pitch, a trimmed transcript of the recorded run, and the demo numbers in one table. The caveats and the security posture are unchanged below it.
