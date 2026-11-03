@@ -1,4 +1,4 @@
-$ node src/cli.ts patch runs/20261028T011454Z-buildwithdesi-vibeaudit-2-demo-app-a578 --run-tests
+$ node src/cli.ts patch runs/20261028T011454Z-buildwithdesi-vibeaudit-2-demo-app-a578 --run-tests --allow-local-tests
 patching 4 findings in classes: secrets, sql-injection, missing-auth, command-injection, path-traversal
 routes/files.js:10 path-traversal: 1/1 edits applied ($0.0063)
 routes/network.js:9 command-injection: 2/2 edits applied ($0.0111)

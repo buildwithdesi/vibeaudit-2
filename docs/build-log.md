@@ -45,3 +45,11 @@ One entry per working day inside the hackathon window. Commit times are in `git 
 - A quote the checker cannot match in the file is flagged "not matched word for word against the file" instead of "treat it as a paraphrase".
 - `demo/after/report.md` and `demo/video/report.md` regenerated from the local run folders with the current renderer. Every count is unchanged.
 - README opens with the pitch, a trimmed transcript of the recorded run, and the demo numbers in one table. The caveats and the security posture are unchanged below it.
+
+## 2026-10-30 (Friday), day 5
+
+- Fresh clone of `main` at `976c90a`: verify 174 tests, 164 pass, 0 fail, 10 skipped; build clean; self-audit clean. CI green on Node 22 and 24. Ticked on the checklist (PR 3).
+- Read the hackathon's two live sessions (Agents 101, and Agents 102: Best Practices for Verifiable Agents) and the `meta-models/legal-agent-workshop` repo. Neither session says anything about judging or submissions. The Official Rules page does: Impact 30, Use of Meta AI Tooling 25, Demo 25, Technical Depth and Execution 20. Noted on the checklist.
+- Added "Where the checks live" to the README, in the workshop's own terms: deterministic checks first, the model second, a person last. Every sentence was checked against the code by two independent reviewers per claim. Claims that said more than the code does were cut or narrowed.
+- Three corrections. `demo/video/transcript-patch.txt` line 1 now carries `--allow-local-tests`: the run record shows the tests ran locally, and the flag has been required since `4aa6a9c`, committed 25 minutes before that run. "Hardened sandbox" in CONTRIBUTIONS row 1 and in the draft description now reads as the clone's real hardening (hooks off, symlinks off, no credential prompts), since there is no container around the clone.
+- Known gap, left for after judging: the API patch backend reads the finding's own file into the prompt even when the file name looks secret-bearing. Credential-shaped values are masked first. Recorded in the README's security posture.
