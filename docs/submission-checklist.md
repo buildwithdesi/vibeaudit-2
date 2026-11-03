@@ -23,6 +23,8 @@ Deadline: Wednesday November 4, 2026, 9:00 PM ET (EST by then; 02:00 UTC on Nove
 
 ## Submission form
 
+Judging, from the Official Rules page (https://cerebralvalley.ai/e/meta-ai-developer-hackathon/waiver, public): Impact 30%, Use of Meta AI Tooling 25%, Demo 25%, Technical Depth and Execution 20%. Write the description to those four, in that order. The two live sessions (Agents 101 and 102) say nothing about judging or the form.
+
 - [ ] Track: Startup.
 - [ ] Theme: Push the Frontier.
 - [ ] Project name: Vibe Audit 2.0.
@@ -34,7 +36,7 @@ Deadline: Wednesday November 4, 2026, 9:00 PM ET (EST by then; 02:00 UTC on Nove
 - [ ] Meta tools used, stated plainly. Paste: "Muse Spark 1.3 (Model API, Standard mode) ran live for exploitability reasoning and for patching. Muse Glimmer 30B triage and the Muse Code patch backend are built but were not run live." If Glimmer or Muse Code runs live before Nov 4, commit the run record to `demo/` first, then change this line, the README and CONTRIBUTIONS together.
 - [ ] One-paragraph description. Draft description below, for you to review; every number in it is from `demo/after`. If a number is regenerated, or Glimmer or Muse Code runs live first, change it here before pasting.
 
-  > Vibe Audit 2.0 is a security audit for AI-generated code that explains the risk in plain language and proves it. Vibe Audit v1, my open-source scanner from earlier this year (prior work, used unchanged as a pinned dependency), finds the patterns. 2.0, built inside the hackathon window, adds the judgment. It takes a GitHub URL, clones it into a hardened sandbox, and has Muse Spark 1.3 (Meta Model API, Standard mode) decide which findings an attacker can actually use, quoting the lines of code that prove it. It writes a proof-of-risk report for a founder, not a security team, then patches the confirmed findings on a sandbox branch, scans again and re-runs the project's own tests. On the seeded demo app, Muse Spark judged 9 findings in 10 calls for $0.17: 6 confirmed, and 3 fake credentials correctly ruled not exploitable. The patch run cost $0.07. Of the 6 confirmed findings, 4 are gone on the re-scan and 2 are still flagged by a rule but re-judged closed by Muse Spark on the patched code, and the project's tests still pass. A Muse Glimmer 30B triage stage and a Muse Code patch backend are built but were not run live.
+  > Vibe Audit 2.0 is a security audit for AI-generated code that explains the risk in plain language and proves it. Vibe Audit v1, my open-source scanner from earlier this year (prior work, used unchanged as a pinned dependency), finds the patterns. 2.0, built inside the hackathon window, adds the judgment. It takes a GitHub URL, clones it with git hooks, symlinks and credential prompts off, and has Muse Spark 1.3 (Meta Model API, Standard mode) decide which findings an attacker can actually use, quoting the lines of code that prove it. It writes a proof-of-risk report for a founder, not a security team, then patches the confirmed findings on a sandbox branch, scans again and re-runs the project's own tests. On the seeded demo app, Muse Spark judged 9 findings in 10 calls for $0.17: 6 confirmed, and 3 fake credentials correctly ruled not exploitable. The patch run cost $0.07. Of the 6 confirmed findings, 4 are gone on the re-scan and 2 are still flagged by a rule but re-judged closed by Muse Spark on the patched code, and the project's tests still pass. A Muse Glimmer 30B triage stage and a Muse Code patch backend are built but were not run live.
 
 ## After submitting
 
